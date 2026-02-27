@@ -261,21 +261,40 @@ python training/train.py --data training/data/ --seg-duration 2.0
 
 ## Voice Generation
 
-### Coqui TTS (real voice cloning)
+### IndexTTS2 (real zero-shot voice cloning — recommended)
+
+IndexTTS2 is developed by Bilibili and is the primary TTS engine. It performs zero-shot voice cloning from a short reference clip, with emotion-timbre separation and optional duration control.
 
 ```bash
-# Install Coqui TTS (requires PyTorch; large download ~2 GB)
-pip install TTS
+# Step 1: Clone IndexTTS2 (must use their uv-based setup)
+git clone https://github.com/index-tts/index-tts.git /opt/index-tts
+cd /opt/index-tts
 
-# The backend will auto-detect and use it
+# Step 2: Install dependencies (uv is REQUIRED — pip is NOT supported)
+pip install uv
+uv sync --all-extras
+
+# Step 3: Download model weights (~4 GB)
+pip install "huggingface-hub[cli]"
+huggingface-cli download IndexTeam/IndexTTS-2 --local-dir checkpoints
+
+# Step 4: Tell this backend where to find IndexTTS2
+export INDEXTTS_DIR=/opt/index-tts
+
+# Step 5: Start the backend
+cd /path/to/this/project
 uvicorn backend.app:app --reload
 ```
 
-Coqui YourTTS performs zero-shot voice cloning: provide a 5–30 second reference clip, and it will synthesise the target text in the speaker's voice. CPU inference is slow (30–120 s); GPU is recommended.
+Hardware requirements:
+- **CPU**: Works but slow (30–120 s per synthesis on a modern CPU)
+- **GPU**: Recommended — NVIDIA CUDA 12.8+, ~4 GB VRAM in FP16 mode
 
-### gTTS fallback
+For GPU FP16, change `use_fp16=False` → `use_fp16=True` in `backend/app.py` line `_load_indextts2()`.
 
-If Coqui is not installed, the backend uses Google Text-to-Speech (gTTS). This generates a generic English voice and is clearly labelled as a fallback in all responses.
+### gTTS fallback (no voice cloning)
+
+When IndexTTS2 is not configured, the backend falls back to Google TTS (gTTS). This generates a **generic English voice** — it does NOT clone the uploaded speaker. The response clearly labels which engine was used.
 
 ---
 

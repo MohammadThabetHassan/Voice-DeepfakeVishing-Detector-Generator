@@ -98,6 +98,7 @@ async function checkApiHealth() {
     dot.className = 'status-dot status-demo';
     text.textContent = 'Demo Mode — no backend configured. Click ⚙ to add API URL.';
     updateDemoNotices(true);
+    _updateEngineLabel(null);
     return;
   }
 
@@ -113,8 +114,15 @@ async function checkApiHealth() {
     if (res.ok) {
       const data = await res.json();
       dot.className = 'status-dot status-ok';
-      text.textContent = `Backend OK — model: ${data.model_name || 'unknown'}, uptime: ${data.uptime_seconds}s`;
+      const engineLabel = data.tts_engine === 'indextts2' ? 'IndexTTS2'
+        : data.tts_engine === 'gtts_fallback' ? 'gTTS (fallback)'
+        : 'none';
+      text.textContent = (
+        `Backend OK — detector: ${data.model_name || 'none'} · ` +
+        `TTS: ${engineLabel} · uptime: ${data.uptime_seconds}s`
+      );
       updateDemoNotices(false);
+      _updateEngineLabel(data);
     } else {
       throw new Error(`HTTP ${res.status}`);
     }
@@ -122,6 +130,27 @@ async function checkApiHealth() {
     dot.className = 'status-dot status-error';
     text.textContent = `Backend unreachable (${err.message}). Showing Demo Mode.`;
     updateDemoNotices(true);
+    _updateEngineLabel(null);
+  }
+}
+
+function _updateEngineLabel(health) {
+  const label = $('#tts-engine-label');
+  if (!label) return;
+  if (!health) {
+    label.textContent = 'No backend connected';
+    label.style.color = 'var(--text-muted)';
+    return;
+  }
+  if (health.indextts2_available) {
+    label.textContent = '✓ IndexTTS2 (zero-shot voice cloning)';
+    label.style.color = 'var(--brand-green)';
+  } else if (health.gtts_available) {
+    label.textContent = '⚠ gTTS fallback (generic voice, NOT a clone)';
+    label.style.color = 'var(--brand-yellow)';
+  } else {
+    label.textContent = '✗ No TTS engine available';
+    label.style.color = 'var(--brand-red)';
   }
 }
 

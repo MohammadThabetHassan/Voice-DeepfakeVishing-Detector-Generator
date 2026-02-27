@@ -126,6 +126,11 @@
       speaker before cloning their voice. Unauthorised cloning is illegal in many jurisdictions.
     </div>
 
+    <div class="engine-info" id="generate-engine-info">
+      <strong>Engine:</strong> <span id="tts-engine-label">checking…</span> &nbsp;
+      <a href="https://github.com/index-tts/index-tts" target="_blank" rel="noopener">IndexTTS2 ↗</a>
+    </div>
+
     <div class="demo-mode-notice" id="generate-demo-notice" hidden>
       <strong>Demo Mode</strong> — No backend connected.
       <a href="#" id="generate-open-config">Configure API URL</a> to enable generation.
@@ -252,9 +257,16 @@ flowchart LR
 
     <h3>Generation Pipeline</h3>
     <p>
-      Voice cloning uses <strong>Coqui TTS YourTTS</strong> (multilingual, zero-shot speaker
-      adaptation from a short reference clip). When Coqui is unavailable, the system falls back
-      to <strong>gTTS</strong> with a clear label indicating the fallback was used.
+      Voice cloning uses <strong>IndexTTS2</strong>
+      (<a href="https://github.com/index-tts/index-tts" target="_blank" rel="noopener">index-tts/index-tts</a>
+      by Bilibili) — an industrial-level zero-shot TTS system that clones voice timbre and
+      emotional expression from a short reference clip. It supports duration control and
+      emotion-style separation.
+    </p>
+    <p>
+      When IndexTTS2 is unavailable (not installed or INDEXTTS_DIR not set), the system falls
+      back to <strong>gTTS</strong> with a clear warning. gTTS produces a generic voice — it is
+      NOT a voice clone.
     </p>
 
     <h3>Deployment</h3>

@@ -319,6 +319,16 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none !important; 
   margin-bottom: 1.2rem;
 }
 
+/* ── ENGINE INFO ────────────────────────────── */
+.engine-info {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .5rem .9rem;
+  font-size: .82rem;
+  margin-bottom: 1rem;
+}
+
 /* ── CONSENT CHECKBOX ───────────────────────── */
 .consent-check {
   display: flex;
