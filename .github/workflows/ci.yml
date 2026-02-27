@@ -1,0 +1,135 @@
+name: CI — Lint, Test, Build Check
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint-python:
+    name: Python Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint backend
+        run: ruff check backend/ training/ --select E,F,W,I --ignore E501
+        continue-on-error: false
+
+      - name: Lint legacy scripts (warnings only)
+        run: ruff check pipeline.py server.py train_detector.py --select E,F --ignore E501,F401
+        continue-on-error: true
+
+  test-backend:
+    name: Backend Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-3.11-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-3.11-
+
+      - name: Install backend dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run backend tests
+        run: pytest backend/tests/ -v --tb=short
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+  test-training:
+    name: Training Pipeline Test (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-training-${{ runner.os }}-3.11-${{ hashFiles('training/requirements.txt') }}
+          restore-keys: pip-training-${{ runner.os }}-3.11-
+
+      - name: Install training dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r training/requirements.txt
+
+      - name: Run training smoke test (existing CSV)
+        run: |
+          python training/train.py --csv osr_features.csv --output models/
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Verify model artifacts
+        run: |
+          ls -la models/*.pkl models/*.json 2>/dev/null || echo "No model files found (expected on first run)"
+          if [ -f models/results.json ]; then
+            echo "=== Training Results ==="
+            cat models/results.json
+          fi
+
+      - name: Upload model artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trained-models-${{ github.run_number }}
+          path: |
+            models/*.pkl
+            models/*.json
+          retention-days: 30
+
+  check-frontend:
+    name: Frontend Static Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check frontend files exist
+        run: |
+          echo "Checking frontend structure…"
+          test -f frontend/index.html   && echo "✓ frontend/index.html"
+          test -f frontend/css/main.css && echo "✓ frontend/css/main.css"
+          test -f frontend/js/app.js    && echo "✓ frontend/js/app.js"
+          echo "All frontend files present."
+
+      - name: Validate HTML (basic)
+        run: |
+          # Check for common HTML issues
+          python3 -c "
+          import sys
+          with open('frontend/index.html') as f:
+              content = f.read()
+          assert '<!DOCTYPE html>' in content, 'Missing DOCTYPE'
+          assert '<html' in content, 'Missing html tag'
+          assert '</html>' in content, 'Missing closing html tag'
+          assert 'app.js' in content, 'Missing app.js reference'
+          assert 'main.css' in content, 'Missing main.css reference'
+          print('✓ HTML basic validation passed')
+          "

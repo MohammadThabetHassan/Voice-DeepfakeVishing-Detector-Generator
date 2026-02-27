@@ -1,0 +1,147 @@
+name: Release — Package & Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'   # e.g. v1.0.0, v2.1.3
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ─── Train models and package as release artifact ───────────────────────────
+  train-and-release:
+    name: Train Models & Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install training dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r training/requirements.txt
+
+      - name: Train all models
+        run: |
+          python training/train.py --csv osr_features.csv --output models/
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Create release archive
+        run: |
+          TAG=${{ github.ref_name || github.event.inputs.tag }}
+          mkdir -p dist
+
+          # Package models
+          tar czf dist/models-${TAG}.tar.gz models/
+
+          # Package backend
+          tar czf dist/backend-${TAG}.tar.gz backend/ --exclude='backend/__pycache__' \
+            --exclude='backend/uploads' --exclude='backend/generated'
+
+          # Package training scripts
+          tar czf dist/training-${TAG}.tar.gz training/ osr_features.csv features.csv \
+            --exclude='training/__pycache__'
+
+          # Results JSON for the frontend
+          cp models/results.json dist/results.json 2>/dev/null || echo '{}' > dist/results.json
+
+          echo "=== Release artifacts ==="
+          ls -lh dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || github.event.inputs.tag }}
+          name: "Release ${{ github.ref_name || github.event.inputs.tag }}"
+          body: |
+            ## Voice Deepfake Detector — Release ${{ github.ref_name || github.event.inputs.tag }}
+
+            ### What's included
+            - **models-*.tar.gz**: Trained MFCC, FFT, and Hybrid models (`.pkl`)
+            - **backend-*.tar.gz**: FastAPI backend source
+            - **training-*.tar.gz**: Training scripts + feature CSVs
+            - **results.json**: Model evaluation metrics
+
+            ### Quick Start (backend)
+            ```bash
+            # Extract backend
+            tar xzf backend-*.tar.gz
+            pip install -r backend/requirements.txt
+            cd backend
+            uvicorn app:app --host 0.0.0.0 --port 8000
+
+            # Extract models to project root
+            tar xzf models-*.tar.gz
+            ```
+
+            ### Docker (optional)
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name || github.event.inputs.tag }}
+            docker run -p 8000:8000 ghcr.io/${{ github.repository }}:latest
+            ```
+
+            ### Frontend
+            The UI is live at: https://${{ github.repository_owner }}.github.io/Voice-Deepfake-Vishing-Detector-Generator/
+          files: |
+            dist/models-*.tar.gz
+            dist/backend-*.tar.gz
+            dist/training-*.tar.gz
+            dist/results.json
+          draft: false
+          prerelease: false
+
+  # ─── Build & push Docker image to GHCR ─────────────────────────────────────
+  docker-publish:
+    name: Build & Push Docker Image (GHCR)
+    runs-on: ubuntu-latest
+    needs: train-and-release
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

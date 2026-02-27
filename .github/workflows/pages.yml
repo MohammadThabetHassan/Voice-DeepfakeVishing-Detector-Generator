@@ -1,0 +1,69 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inject config.json for Pages
+        # Creates a config.json that tells the frontend it's running in static/demo mode.
+        # To wire up a real backend after deployment, users can update the API URL
+        # via the ⚙ Config button in the UI (stored in localStorage).
+        run: |
+          mkdir -p _site
+          cat > _site/config.json <<'EOF'
+          {
+            "api_base_url": "",
+            "demo_mode": true,
+            "version": "${{ github.sha }}",
+            "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Copy frontend assets
+        run: |
+          # Copy everything from /frontend to _site root
+          cp -r frontend/. _site/
+          # Copy models results.json if it exists (pre-computed metrics)
+          if [ -d models ]; then
+            mkdir -p _site/models
+            cp models/*.json _site/models/ 2>/dev/null || true
+          fi
+          # Copy docs if they exist
+          if [ -d docs ]; then
+            cp -r docs _site/docs 2>/dev/null || true
+          fi
+          echo "Site contents:"
+          find _site -type f | sort
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
