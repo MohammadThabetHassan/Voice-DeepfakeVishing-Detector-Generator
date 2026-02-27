@@ -1,29 +1,41 @@
 """
-FastAPI backend for Voice Deepfake Vishing Detector & Generator.
+FastAPI backend — Voice Deepfake Vishing Detector & Generator.
 
 Endpoints:
   GET  /health          → {"status": "ok", ...}
   POST /detect          → WAV upload → {prediction, confidence, model_used, notes}
-  POST /generate        → speaker WAV + text → generated audio (base64 or file)
+  POST /generate        → speaker WAV + text → base64 WAV audio
+
+TTS engine priority (generation):
+  1. IndexTTS2  (index-tts/index-tts) — zero-shot voice cloning, emotion control
+  2. gTTS       (fallback, no cloning) — requires internet, generic voice
 
 Audio format: WAV (mono, 16 kHz recommended).
 WebM/OGG/MP3 are auto-converted via pydub/ffmpeg when available.
+
+Installation:
+  pip install -r backend/requirements.txt
+
+For IndexTTS2 voice cloning (optional, requires PyTorch + ~4 GB VRAM or CPU):
+  git clone https://github.com/index-tts/index-tts.git /opt/index-tts
+  cd /opt/index-tts && pip install uv && uv sync --all-extras
+  # Download model weights:
+  huggingface-cli download IndexTeam/IndexTTS-2 --local-dir /opt/index-tts/checkpoints
+  # Then set env var so this backend finds it:
+  export INDEXTTS_DIR=/opt/index-tts
 """
 
 from __future__ import annotations
 
 import base64
-import io
 import logging
 import os
 import sys
-import tempfile
 import time
 import traceback
 import uuid
 from pathlib import Path
 
-# FastAPI & friends
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -37,7 +49,6 @@ GENERATED_DIR = BACKEND_DIR / "generated"
 UPLOADS_DIR.mkdir(exist_ok=True)
 GENERATED_DIR.mkdir(exist_ok=True)
 
-# Add root to path so we can import pipeline utilities
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -47,8 +58,11 @@ log = logging.getLogger("deepfake-api")
 # ─── app ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Voice Deepfake API",
-    description="Detect deepfake voices and generate voice clones for research purposes.",
-    version="2.0.0",
+    description=(
+        "Detect deepfake voices (MFCC/FFT/Hybrid) and generate voice clones "
+        "using IndexTTS2 zero-shot TTS. Research use only."
+    ),
+    version="2.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -60,24 +74,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── lazy-loaded globals ──────────────────────────────────────────────────────
+# ─── globals (lazy-loaded) ────────────────────────────────────────────────────
 _detector = None          # loaded classifier dict
-_tts_model = None         # Coqui TTS model
-_tts_available = False    # whether Coqui loaded OK
-_gtts_available = False   # whether gTTS is available
-
+_indextts2 = None         # IndexTTS2 model instance
+_indextts2_available = False
+_gtts_available = False
 _START_TIME = time.time()
 
+# Path where the user cloned index-tts (configurable via env var)
+INDEXTTS_DIR = Path(os.environ.get("INDEXTTS_DIR", "/opt/index-tts"))
+INDEXTTS_CHECKPOINTS = INDEXTTS_DIR / "checkpoints"
+
+
+# ─── detector loading ─────────────────────────────────────────────────────────
 
 def _load_detector():
-    """Load the best available detection model (lazy)."""
+    """Load the best available detection model (lazy, priority order)."""
     global _detector
     if _detector is not None:
         return _detector
 
-    # Preference order: hybrid > mfcc > osr > final > base
     candidates = [
         MODELS_DIR / "deepfake_detector_hybrid.pkl",
+        MODELS_DIR / "deepfake_detector_best.pkl",
         MODELS_DIR / "deepfake_detector_mfcc.pkl",
         ROOT_DIR / "deepfake_detector_osr.pkl",
         ROOT_DIR / "deepfake_detector_final.pkl",
@@ -85,54 +104,108 @@ def _load_detector():
     ]
     try:
         import joblib
+
         for path in candidates:
             if path.exists():
                 log.info(f"Loading detector: {path}")
                 obj = joblib.load(path)
-                # Support both raw classifier and wrapped dict
                 if isinstance(obj, dict):
                     _detector = obj
                 else:
-                    _detector = {"model": obj, "model_name": path.stem, "feature_type": "mfcc_hybrid"}
+                    _detector = {
+                        "model": obj,
+                        "model_name": path.stem,
+                        "feature_type": "mfcc_hybrid",
+                    }
                 log.info(f"Detector loaded: {_detector.get('model_name', 'unknown')}")
                 return _detector
     except Exception as e:
         log.error(f"Failed to load detector: {e}")
+
     _detector = None
     return None
 
 
-def _load_tts():
-    """Attempt to load Coqui TTS once."""
-    global _tts_model, _tts_available, _gtts_available
-    if _tts_available or _tts_model is not None:
-        return _tts_available
+# ─── TTS loading ──────────────────────────────────────────────────────────────
+
+def _load_indextts2():
+    """
+    Try to load IndexTTS2 from the cloned index-tts repository.
+
+    The user must:
+      1. Clone https://github.com/index-tts/index-tts  →  INDEXTTS_DIR
+      2. Run:  cd INDEXTTS_DIR && uv sync --all-extras
+      3. Download model weights to INDEXTTS_DIR/checkpoints/
+      4. Set env var:  INDEXTTS_DIR=/path/to/index-tts
+
+    The backend adds INDEXTTS_DIR to sys.path so `indextts` can be imported.
+    """
+    global _indextts2, _indextts2_available
+
+    if _indextts2_available:
+        return True
+    if not INDEXTTS_DIR.exists():
+        log.info(
+            f"IndexTTS2 not found at {INDEXTTS_DIR}. "
+            "Set INDEXTTS_DIR env var to enable voice cloning."
+        )
+        return False
+    if not INDEXTTS_CHECKPOINTS.exists():
+        log.warning(
+            f"IndexTTS2 directory found at {INDEXTTS_DIR} but 'checkpoints/' is missing. "
+            "Download model weights: "
+            "huggingface-cli download IndexTeam/IndexTTS-2 --local-dir checkpoints"
+        )
+        return False
+
+    indextts_src = str(INDEXTTS_DIR)
+    if indextts_src not in sys.path:
+        sys.path.insert(0, indextts_src)
 
     try:
-        from TTS.api import TTS
-        log.info("Loading Coqui TTS model (first call may download ~200 MB)…")
-        _tts_model = TTS(model_name="tts_models/multilingual/multi-dataset/your_tts", progress_bar=False)
-        _tts_available = True
-        log.info("Coqui TTS ready.")
-    except Exception as e:
-        log.warning(f"Coqui TTS not available: {e}. Will use gTTS fallback.")
-        _tts_available = False
+        from indextts.infer_v2 import IndexTTS2  # type: ignore[import]
 
+        log.info("Loading IndexTTS2 model (first load may take 30–60 s)…")
+        _indextts2 = IndexTTS2(
+            cfg_path=str(INDEXTTS_CHECKPOINTS / "config.yaml"),
+            model_dir=str(INDEXTTS_CHECKPOINTS),
+            use_fp16=False,
+            use_cuda_kernel=False,
+            use_deepspeed=False,
+        )
+        _indextts2_available = True
+        log.info("IndexTTS2 loaded successfully.")
+        return True
+    except ImportError:
+        log.warning(
+            "Could not import indextts.infer_v2. "
+            "Ensure you ran: cd $INDEXTTS_DIR && uv sync --all-extras"
+        )
+    except Exception as e:
+        log.warning(f"IndexTTS2 load failed: {e}")
+
+    _indextts2_available = False
+    return False
+
+
+def _check_gtts():
+    global _gtts_available
     try:
         from gtts import gTTS  # noqa: F401
+
         _gtts_available = True
     except ImportError:
         _gtts_available = False
-
-    return _tts_available
+    return _gtts_available
 
 
 # ─── audio utilities ──────────────────────────────────────────────────────────
 
 def _convert_to_wav(src: Path, dst: Path) -> bool:
-    """Try to convert any audio format to WAV mono 16 kHz. Returns True on success."""
+    """Convert any audio format → mono 16 kHz WAV via pydub/ffmpeg."""
     try:
         from pydub import AudioSegment
+
         audio = AudioSegment.from_file(str(src))
         audio = audio.set_channels(1).set_frame_rate(16000).set_sample_width(2)
         audio.export(str(dst), format="wav")
@@ -143,7 +216,7 @@ def _convert_to_wav(src: Path, dst: Path) -> bool:
 
 
 def _save_upload(upload: UploadFile) -> Path:
-    """Save upload to temp dir, converting to WAV if needed. Returns WAV path."""
+    """Persist upload to uploads/, normalise to mono WAV 16 kHz. Returns WAV path."""
     uid = uuid.uuid4().hex
     raw_suffix = Path(upload.filename or "audio.wav").suffix.lower() or ".wav"
     raw_path = UPLOADS_DIR / f"{uid}_raw{raw_suffix}"
@@ -153,105 +226,79 @@ def _save_upload(upload: UploadFile) -> Path:
     raw_path.write_bytes(data)
 
     if raw_suffix == ".wav":
-        # Still normalise to mono/16k
         if not _convert_to_wav(raw_path, wav_path):
-            wav_path = raw_path  # use as-is
+            wav_path = raw_path
     else:
         if not _convert_to_wav(raw_path, wav_path):
             raise HTTPException(
                 status_code=415,
-                detail=f"Could not convert {raw_suffix} to WAV. Install ffmpeg and pydub, or upload WAV directly.",
+                detail=(
+                    f"Cannot convert '{raw_suffix}' to WAV. "
+                    "Install ffmpeg + pydub, or upload WAV directly."
+                ),
             )
-
     return wav_path
+
+
+def _cleanup(*paths: Path) -> None:
+    for p in paths:
+        if p and p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
 
 
 # ─── feature extraction ───────────────────────────────────────────────────────
 
-def _extract_features_for_inference(wav_path: Path, feature_type: str = "mfcc_hybrid"):
-    """Extract features matching what the model was trained on."""
-    import numpy as np
-    from scipy.io import wavfile
-    from scipy import signal as scipy_signal
-
-    sr, data = wavfile.read(str(wav_path))
-    if data.ndim > 1:
-        data = data.mean(axis=1)
-    data = data.astype(np.float32)
-    mx = np.max(np.abs(data))
-    if mx > 0:
-        data /= mx
-
-    # Resample to 16 kHz
-    target_sr = 16000
-    if sr != target_sr:
-        new_len = int(len(data) * target_sr / sr)
-        data = scipy_signal.resample(data, new_len)
-        sr = target_sr
-
-    # Use 1 second window
-    seg_len = sr
-    segment = data[:seg_len] if len(data) >= seg_len else np.pad(data, (0, seg_len - len(data)))
-
-    mfcc_feats = _mfcc_features(segment, sr)       # 13 dims
-    fft_feats = _fft_features(segment, sr)          # 6 dims
-
-    if feature_type == "mfcc":
-        return mfcc_feats
-    elif feature_type == "fft":
-        return fft_feats
-    else:  # hybrid
-        return np.concatenate([mfcc_feats, fft_feats])
-
-
-def _mfcc_features(segment, sr):
-    """13-dim MFCC mean vector (matches training pipeline)."""
+def _mfcc_features(segment, sr, n_mfcc: int = 13):
+    """Mean MFCC vector (n_mfcc dims)."""
     import numpy as np
     import scipy.fftpack as fftpack
 
     pre_emphasis = 0.97
-    emphasized = np.append(segment[0], segment[1:] - pre_emphasis * segment[:-1])
+    emph = np.append(segment[0], segment[1:] - pre_emphasis * segment[:-1])
 
-    frame_length = int(0.025 * sr)
+    frame_len = int(0.025 * sr)
     frame_step = int(0.010 * sr)
-    n = len(emphasized)
-    n_frames = max(1, int(np.ceil((n - frame_length) / frame_step)) + 1)
-    pad_len = (n_frames - 1) * frame_step + frame_length
-    padded = np.append(emphasized, np.zeros(max(0, pad_len - n)))
+    n = len(emph)
+    n_frames = max(1, int(np.ceil((n - frame_len) / frame_step)) + 1)
+    pad_len = (n_frames - 1) * frame_step + frame_len
+    padded = np.append(emph, np.zeros(max(0, pad_len - n)))
 
     idx = (
-        np.tile(np.arange(frame_length), (n_frames, 1))
-        + np.tile(np.arange(n_frames) * frame_step, (frame_length, 1)).T
+        np.tile(np.arange(frame_len), (n_frames, 1))
+        + np.tile(np.arange(n_frames) * frame_step, (frame_len, 1)).T
     )
-    frames = padded[idx.astype(np.int32)] * np.hamming(frame_length)
+    frames = padded[idx.astype(np.int32)] * np.hamming(frame_len)
 
     NFFT = 512
     mag = np.abs(np.fft.rfft(frames, NFFT))
-    power = (1.0 / NFFT) * mag ** 2
+    power = (1.0 / NFFT) * mag**2
 
     nfilt = 26
-    low_mel = 0
-    high_mel = 2595 * np.log10(1 + (sr / 2) / 700)
+    low_mel, high_mel = 0, 2595 * np.log10(1 + (sr / 2) / 700)
     mel_pts = np.linspace(low_mel, high_mel, nfilt + 2)
     hz_pts = 700 * (10 ** (mel_pts / 2595) - 1)
     bin_f = np.floor((NFFT + 1) * hz_pts / sr).astype(int)
 
     fbank = np.zeros((nfilt, NFFT // 2 + 1))
     for m in range(1, nfilt + 1):
-        for k in range(bin_f[m - 1], bin_f[m]):
-            fbank[m - 1, k] = (k - bin_f[m - 1]) / (bin_f[m] - bin_f[m - 1] + 1e-10)
-        for k in range(bin_f[m], bin_f[m + 1]):
-            fbank[m - 1, k] = (bin_f[m + 1] - k) / (bin_f[m + 1] - bin_f[m] + 1e-10)
+        lo, mid, hi = bin_f[m - 1], bin_f[m], bin_f[m + 1]
+        for k in range(lo, mid):
+            fbank[m - 1, k] = (k - lo) / (mid - lo + 1e-10)
+        for k in range(mid, hi):
+            fbank[m - 1, k] = (hi - k) / (hi - mid + 1e-10)
 
     fb = np.dot(power, fbank.T)
     fb = np.where(fb == 0, np.finfo(float).eps, fb)
     fb = 20 * np.log10(fb)
-    mfcc = fftpack.dct(fb, type=2, axis=1, norm="ortho")[:, :13]
+    mfcc = fftpack.dct(fb, type=2, axis=1, norm="ortho")[:, :n_mfcc]
     return np.mean(mfcc, axis=0)
 
 
 def _fft_features(segment, sr):
-    """6-dim spectral feature vector (centroid, bandwidth, rolloff, band energies x3)."""
+    """6-dim spectral feature vector."""
     import numpy as np
 
     spectrum = np.abs(np.fft.rfft(segment))
@@ -264,7 +311,6 @@ def _fft_features(segment, sr):
     rolloff_idx = np.searchsorted(cum, 0.85 * cum[-1])
     rolloff = freqs[min(rolloff_idx, len(freqs) - 1)]
 
-    # Log band energies (low/mid/high)
     n = len(spectrum)
     low_e = np.log1p(np.mean(spectrum[: n // 3]))
     mid_e = np.log1p(np.mean(spectrum[n // 3 : 2 * n // 3]))
@@ -273,111 +319,11 @@ def _fft_features(segment, sr):
     return np.array([centroid, bandwidth, rolloff, low_e, mid_e, high_e])
 
 
-# ─── endpoints ────────────────────────────────────────────────────────────────
-
-@app.get("/health")
-def health():
-    detector = _load_detector()
-    return {
-        "status": "ok",
-        "uptime_seconds": round(time.time() - _START_TIME, 1),
-        "detector_loaded": detector is not None,
-        "model_name": detector.get("model_name", "none") if detector else "none",
-        "tts_available": _tts_available,
-        "gtts_available": _gtts_available,
-    }
-
-
-@app.post("/detect")
-async def detect(audio: UploadFile = File(...)):
-    """
-    Classify an audio file as real or deepfake.
-
-    Returns:
-        prediction: "real" | "fake"
-        confidence: float 0.0–1.0
-        model_used: str
-        notes: str
-    """
-    if not audio.filename:
-        raise HTTPException(400, "No filename provided.")
-
-    t0 = time.time()
-    wav_path = None
-    try:
-        wav_path = _save_upload(audio)
-        detector = _load_detector()
-        if detector is None:
-            raise HTTPException(503, "Detection model not loaded. Run training pipeline first.")
-
-        model = detector["model"]
-        feature_type = detector.get("feature_type", "mfcc_hybrid")
-
-        feats = _extract_features_for_inference(wav_path, feature_type)
-
-        # Build DataFrame with correct column names
-        import pandas as pd
-        import numpy as np
-        col_map = {
-            "mfcc": [f"MFCC{i+1}" for i in range(13)],
-            "fft": ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"],
-            "mfcc_hybrid": (
-                [f"MFCC{i+1}" for i in range(13)]
-                + ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"]
-            ),
-        }
-        cols = col_map.get(feature_type, col_map["mfcc_hybrid"])
-        # Handle legacy 18-feature models (MFCC x13 + centroid/bandwidth/rolloff/jitter/shimmer)
-        if len(feats) != len(cols):
-            feats_18 = _extract_legacy_18_features(wav_path)
-            legacy_cols = [f"MFCC{i+1}" for i in range(13)] + ["centroid", "bandwidth", "rolloff", "jitter", "shimmer"]
-            df = pd.DataFrame([feats_18], columns=legacy_cols)
-        else:
-            df = pd.DataFrame([feats], columns=cols)
-
-        pred_raw = model.predict(df)[0]
-        confidence = 0.5
-        if hasattr(model, "predict_proba"):
-            proba = model.predict_proba(df)[0]
-            confidence = float(max(proba))
-
-        # Normalise label
-        if str(pred_raw) in ("1", "fake", "deepfake"):
-            prediction = "fake"
-            label_str = "Deepfake voice detected"
-        else:
-            prediction = "real"
-            label_str = "Real voice detected"
-
-        elapsed = round(time.time() - t0, 3)
-        return JSONResponse({
-            "prediction": prediction,
-            "confidence": round(confidence, 4),
-            "model_used": detector.get("model_name", "unknown"),
-            "feature_type": feature_type,
-            "inference_time_s": elapsed,
-            "notes": label_str,
-        })
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.error(traceback.format_exc())
-        raise HTTPException(500, f"Detection failed: {e}")
-    finally:
-        # Clean up uploaded file
-        if wav_path and wav_path.exists():
-            try:
-                wav_path.unlink()
-            except Exception:
-                pass
-
-
-def _extract_legacy_18_features(wav_path: Path):
-    """Extract 18 features matching original pipeline (for old .pkl models)."""
+def _load_wav_segment(wav_path: Path):
+    """Load WAV → mono float32 @ 16 kHz, return (segment_1s, sr)."""
     import numpy as np
-    from scipy.io import wavfile
     from scipy import signal as scipy_signal
+    from scipy.io import wavfile
 
     sr, data = wavfile.read(str(wav_path))
     if data.ndim > 1:
@@ -389,24 +335,154 @@ def _extract_legacy_18_features(wav_path: Path):
     if sr != 16000:
         data = scipy_signal.resample(data, int(len(data) * 16000 / sr))
         sr = 16000
-    seg = data[:sr] if len(data) >= sr else np.pad(data, (0, sr - len(data)))
+    seg_len = sr
+    segment = data[:seg_len] if len(data) >= seg_len else np.pad(data, (0, seg_len - len(data)))
+    return segment, sr
 
-    mfcc = _mfcc_features(seg, sr)   # 13
 
-    spectrum = np.abs(np.fft.rfft(seg))
-    freqs = np.fft.rfftfreq(len(seg), d=1.0 / sr)
+def _extract_features_for_inference(wav_path: Path, feature_type: str = "mfcc_hybrid"):
+    import numpy as np
+
+    segment, sr = _load_wav_segment(wav_path)
+    mfcc = _mfcc_features(segment, sr)
+    fft = _fft_features(segment, sr)
+
+    if feature_type == "mfcc":
+        return mfcc
+    elif feature_type == "fft":
+        return fft
+    else:
+        return np.concatenate([mfcc, fft])
+
+
+def _extract_legacy_18_features(wav_path: Path):
+    """18-dim features for original .pkl models (MFCC×13 + centroid/bandwidth/rolloff/jitter/shimmer)."""
+    import numpy as np
+
+    segment, sr = _load_wav_segment(wav_path)
+    mfcc = _mfcc_features(segment, sr)
+
+    spectrum = np.abs(np.fft.rfft(segment))
+    freqs = np.fft.rfftfreq(len(segment), d=1.0 / sr)
     total = np.sum(spectrum) + 1e-10
     centroid = np.sum(freqs * spectrum) / total
     bandwidth = np.sqrt(np.sum(((freqs - centroid) ** 2) * spectrum) / total)
     cum = np.cumsum(spectrum)
     rolloff_idx = np.searchsorted(cum, 0.85 * cum[-1])
     rolloff = freqs[min(rolloff_idx, len(freqs) - 1)]
-
-    diff = np.diff(seg)
-    jitter = float(np.mean(np.abs(diff)))
-    shimmer = float(np.std(np.diff(np.abs(seg))))
+    jitter = float(np.mean(np.abs(np.diff(segment))))
+    shimmer = float(np.std(np.diff(np.abs(segment))))
 
     return np.concatenate([mfcc, [centroid, bandwidth, rolloff, jitter, shimmer]])
+
+
+# ─── endpoints ────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health():
+    """Returns service health and capability status."""
+    detector = _load_detector()
+    _check_gtts()
+    return {
+        "status": "ok",
+        "uptime_seconds": round(time.time() - _START_TIME, 1),
+        "detector_loaded": detector is not None,
+        "model_name": detector.get("model_name", "none") if detector else "none",
+        "tts_engine": (
+            "indextts2" if _indextts2_available
+            else "gtts_fallback" if _gtts_available
+            else "none"
+        ),
+        "indextts2_available": _indextts2_available,
+        "indextts2_dir": str(INDEXTTS_DIR),
+        "gtts_available": _gtts_available,
+    }
+
+
+@app.post("/detect")
+async def detect(audio: UploadFile = File(...)):
+    """
+    Classify an audio file as real or deepfake.
+
+    Upload a WAV file (any sample rate/channels — auto-converted).
+    Returns: prediction, confidence, model_used, feature_type, inference_time_s
+    """
+    if not audio.filename:
+        raise HTTPException(400, "No filename provided.")
+
+    t0 = time.time()
+    wav_path = None
+    try:
+        wav_path = _save_upload(audio)
+        detector = _load_detector()
+        if detector is None:
+            raise HTTPException(
+                503,
+                "Detection model not loaded. Run: python training/train.py --csv osr_features.csv",
+            )
+
+        model = detector["model"]
+        feature_type = detector.get("feature_type", "mfcc_hybrid")
+        feat_cols = detector.get("feature_columns", None)
+
+        import numpy as np
+        import pandas as pd
+
+        col_map = {
+            "mfcc": [f"MFCC{i+1}" for i in range(13)],
+            "fft": ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"],
+            "hybrid": (
+                [f"MFCC{i+1}" for i in range(13)]
+                + ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"]
+            ),
+            "mfcc_hybrid": (
+                [f"MFCC{i+1}" for i in range(13)]
+                + ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"]
+            ),
+        }
+
+        expected_cols = feat_cols or col_map.get(feature_type, col_map["mfcc_hybrid"])
+        feats = _extract_features_for_inference(wav_path, feature_type)
+
+        # Handle legacy 18-feature models
+        if len(feats) != len(expected_cols):
+            feats = _extract_legacy_18_features(wav_path)
+            expected_cols = (
+                [f"MFCC{i+1}" for i in range(13)]
+                + ["centroid", "bandwidth", "rolloff", "jitter", "shimmer"]
+            )
+
+        df = pd.DataFrame([feats], columns=expected_cols)
+        pred_raw = model.predict(df)[0]
+
+        confidence = 0.5
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(df)[0]
+            confidence = float(max(proba))
+
+        if str(pred_raw) in ("1", "fake", "deepfake"):
+            prediction = "fake"
+            notes = "Deepfake voice detected"
+        else:
+            prediction = "real"
+            notes = "Real voice detected"
+
+        return JSONResponse({
+            "prediction": prediction,
+            "confidence": round(confidence, 4),
+            "model_used": detector.get("model_name", "unknown"),
+            "feature_type": feature_type,
+            "inference_time_s": round(time.time() - t0, 3),
+            "notes": notes,
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(traceback.format_exc())
+        raise HTTPException(500, f"Detection failed: {e}")
+    finally:
+        _cleanup(wav_path)
 
 
 @app.post("/generate")
@@ -415,13 +491,18 @@ async def generate(
     text: str = Form(...),
 ):
     """
-    Clone the voice in `audio` and synthesise `text`.
+    Clone the voice from `audio` and synthesise `text`.
 
-    Returns base64-encoded WAV + metadata.
+    TTS engine priority:
+      1. IndexTTS2  (zero-shot voice cloning — requires INDEXTTS_DIR env var)
+      2. gTTS       (generic fallback, requires internet, NOT a voice clone)
+
+    Returns: audio_base64 (WAV), method_used, generation_time_s, notes
     """
     if not audio.filename:
         raise HTTPException(400, "No speaker audio provided.")
-    if not text or not text.strip():
+    text = text.strip()
+    if not text:
         raise HTTPException(400, "text field is required and must not be empty.")
     if len(text) > 500:
         raise HTTPException(400, "text must be 500 characters or fewer.")
@@ -429,52 +510,76 @@ async def generate(
     t0 = time.time()
     speaker_wav = None
     out_path = None
+
     try:
         speaker_wav = _save_upload(audio)
         uid = uuid.uuid4().hex
         out_path = GENERATED_DIR / f"generated_{uid}.wav"
 
-        _load_tts()  # ensure attempt was made
-
         method_used = "none"
-        if _tts_available and _tts_model is not None:
-            try:
-                _tts_model.tts_to_file(
-                    text=text.strip(),
-                    speaker_wav=str(speaker_wav),
-                    file_path=str(out_path),
-                    language="en",
-                )
-                method_used = "coqui_your_tts"
-            except Exception as e:
-                log.warning(f"Coqui TTS failed: {e} — trying gTTS fallback")
+        notes = ""
 
-        if method_used == "none" and _gtts_available:
-            from gtts import gTTS
-            tts = gTTS(text=text.strip(), lang="en")
-            tts.save(str(out_path))
-            method_used = "gtts_fallback"
+        # ── Attempt 1: IndexTTS2 ──────────────────────────────────────────────
+        if _load_indextts2():
+            try:
+                log.info(f"IndexTTS2: synthesising '{text[:60]}…'")
+                _indextts2.infer(
+                    spk_audio_prompt=str(speaker_wav),
+                    text=text,
+                    output_path=str(out_path),
+                    verbose=False,
+                )
+                if out_path.exists() and out_path.stat().st_size > 0:
+                    method_used = "indextts2"
+                    notes = (
+                        "Voice cloned using IndexTTS2 zero-shot TTS "
+                        "(Bilibili/index-tts). Emotion and timbre are "
+                        "derived from the speaker reference audio."
+                    )
+                else:
+                    log.warning("IndexTTS2 produced no output, trying fallback.")
+            except Exception as e:
+                log.warning(f"IndexTTS2 synthesis failed: {e} — trying gTTS fallback.")
+
+        # ── Attempt 2: gTTS fallback ──────────────────────────────────────────
+        if method_used == "none":
+            _check_gtts()
+            if _gtts_available:
+                try:
+                    from gtts import gTTS
+
+                    log.info("Using gTTS fallback (generic voice, not a clone).")
+                    tts = gTTS(text=text, lang="en")
+                    tts.save(str(out_path))
+                    if out_path.exists() and out_path.stat().st_size > 0:
+                        method_used = "gtts_fallback"
+                        notes = (
+                            "⚠ gTTS fallback used — this is a generic Google TTS voice, "
+                            "NOT a clone of the uploaded speaker. "
+                            "To enable real voice cloning, install IndexTTS2 and set "
+                            "the INDEXTTS_DIR environment variable."
+                        )
+                except Exception as e:
+                    log.error(f"gTTS also failed: {e}")
 
         if method_used == "none":
-            raise HTTPException(503, "No TTS engine available. Install TTS or gtts.")
-
-        if not out_path.exists():
-            raise HTTPException(500, "Generated file missing after synthesis.")
+            raise HTTPException(
+                503,
+                "No TTS engine available.\n"
+                "• For voice cloning: install IndexTTS2 and set INDEXTTS_DIR env var.\n"
+                "• For basic TTS fallback: pip install gtts",
+            )
 
         audio_bytes = out_path.read_bytes()
         audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
-        elapsed = round(time.time() - t0, 3)
 
         return JSONResponse({
             "success": True,
             "method_used": method_used,
             "audio_base64": audio_b64,
             "audio_mime": "audio/wav",
-            "generation_time_s": elapsed,
-            "notes": (
-                "Voice cloned via Coqui YourTTS." if method_used == "coqui_your_tts"
-                else "gTTS fallback used — voice is generic, not a clone of input speaker."
-            ),
+            "generation_time_s": round(time.time() - t0, 3),
+            "notes": notes,
         })
 
     except HTTPException:
@@ -483,15 +588,11 @@ async def generate(
         log.error(traceback.format_exc())
         raise HTTPException(500, f"Generation failed: {e}")
     finally:
-        for p in [speaker_wav, out_path]:
-            if p and p.exists():
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
+        _cleanup(speaker_wav, out_path)
 
 
-# ─── run directly ─────────────────────────────────────────────────────────────
+# ─── entrypoint ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
