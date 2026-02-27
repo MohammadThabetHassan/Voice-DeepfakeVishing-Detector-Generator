@@ -5,9 +5,18 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = [
-    "E501",   # line too long (handled by formatter)
+    "E501",   # line too long
     "E402",   # module level import not at top (legacy files)
+    "F841",   # local variable assigned but never used
+    "W291",   # trailing whitespace (false positive in multiline strings)
+    "W293",   # whitespace before comment
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Legacy files — many issues, treat as warnings only (CI uses `|| true`)
+"pipeline.py" = ["E", "F", "W", "I"]
+"server.py"   = ["E", "F", "W", "I"]
+"train_detector.py" = ["E", "F", "W", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]

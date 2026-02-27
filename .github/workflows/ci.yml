@@ -19,15 +19,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install ruff
-        run: pip install ruff
+        run: pip install "ruff>=0.4.0"
 
-      - name: Lint backend
-        run: ruff check backend/ training/ --select E,F,W,I --ignore E501
-        continue-on-error: false
+      - name: Lint backend and training (fail on errors)
+        run: ruff check backend/ training/
 
-      - name: Lint legacy scripts (warnings only)
-        run: ruff check pipeline.py server.py train_detector.py --select E,F --ignore E501,F401
-        continue-on-error: true
+      - name: Lint legacy scripts (warnings only, non-blocking)
+        run: ruff check pipeline.py server.py train_detector.py || true
 
   test-backend:
     name: Backend Unit Tests
@@ -44,8 +42,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-3.11-${{ hashFiles('backend/requirements.txt') }}
-          restore-keys: pip-${{ runner.os }}-3.11-
+          key: pip-backend-${{ runner.os }}-3.11-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: pip-backend-${{ runner.os }}-3.11-
 
       - name: Install backend dependencies
         run: |
@@ -53,13 +51,13 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pytest pytest-asyncio httpx
 
-      - name: Run backend tests
+      - name: Run backend unit tests
         run: pytest backend/tests/ -v --tb=short
         env:
           PYTHONPATH: ${{ github.workspace }}
 
   test-training:
-    name: Training Pipeline Test (smoke)
+    name: Training Pipeline (smoke test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,21 +79,20 @@ jobs:
           pip install --upgrade pip
           pip install -r training/requirements.txt
 
-      - name: Run training smoke test (existing CSV)
-        run: |
-          python training/train.py --csv osr_features.csv --output models/
+      - name: Train models from existing CSV
+        run: python training/train.py --csv osr_features.csv --output models/
         env:
           PYTHONPATH: ${{ github.workspace }}
 
-      - name: Verify model artifacts
+      - name: Print results table
         run: |
-          ls -la models/*.pkl models/*.json 2>/dev/null || echo "No model files found (expected on first run)"
           if [ -f models/results.json ]; then
-            echo "=== Training Results ==="
+            echo "=== Model Results ==="
             cat models/results.json
           fi
+          ls -lh models/ 2>/dev/null || true
 
-      - name: Upload model artifacts
+      - name: Upload trained model artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -111,19 +108,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check frontend files exist
+      - name: Verify frontend files exist
         run: |
-          echo "Checking frontend structure…"
           test -f frontend/index.html   && echo "✓ frontend/index.html"
           test -f frontend/css/main.css && echo "✓ frontend/css/main.css"
           test -f frontend/js/app.js    && echo "✓ frontend/js/app.js"
-          echo "All frontend files present."
 
-      - name: Validate HTML (basic)
+      - name: Validate HTML structure
         run: |
-          # Check for common HTML issues
           python3 -c "
-          import sys
           with open('frontend/index.html') as f:
               content = f.read()
           assert '<!DOCTYPE html>' in content, 'Missing DOCTYPE'
@@ -131,5 +124,5 @@ jobs:
           assert '</html>' in content, 'Missing closing html tag'
           assert 'app.js' in content, 'Missing app.js reference'
           assert 'main.css' in content, 'Missing main.css reference'
-          print('✓ HTML basic validation passed')
+          print('✓ HTML validation passed')
           "
