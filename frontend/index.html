@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Deepfake Detector & Generator</title>
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+<!-- ── ETHICS BANNER ──────────────────────────────────────────────────── -->
+<div id="ethics-banner" role="alert">
+  <strong>Research &amp; Educational Use Only</strong> — This tool is provided strictly for academic
+  research. Do <em>not</em> generate voice clones without <em>explicit written consent</em> from the
+  speaker. By using this tool you agree to comply with all applicable laws.
+  <button id="ethics-dismiss" aria-label="Dismiss banner">I Understand</button>
+</div>
+
+<!-- ── HEADER ─────────────────────────────────────────────────────────── -->
+<header>
+  <div class="header-inner">
+    <h1>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/>
+        <line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>
+      Voice Deepfake Vishing Detector &amp; Generator
+    </h1>
+    <p class="tagline">Academic graduation project · ML pipeline: MFCC vs FFT vs Hybrid</p>
+  </div>
+</header>
+
+<!-- ── BACKEND STATUS ─────────────────────────────────────────────────── -->
+<div id="api-status-bar">
+  <span id="api-status-indicator" class="status-dot status-unknown" aria-live="polite"></span>
+  <span id="api-status-text">Checking backend…</span>
+  <button id="api-config-btn" title="Configure API URL">⚙ Config</button>
+</div>
+
+<!-- ── API CONFIG MODAL ───────────────────────────────────────────────── -->
+<div id="api-config-modal" class="modal" hidden>
+  <div class="modal-box">
+    <h2>Backend Configuration</h2>
+    <p>The UI is hosted on GitHub Pages (static only). For full Detect / Generate functionality,
+       run the backend locally or in a container.</p>
+    <label for="api-url-input">API Base URL</label>
+    <input type="url" id="api-url-input" placeholder="http://localhost:8000"
+           autocomplete="off" spellcheck="false" />
+    <div class="modal-actions">
+      <button id="api-save-btn" class="btn-primary">Save &amp; Test</button>
+      <button id="api-clear-btn" class="btn-secondary">Clear (Demo Mode)</button>
+      <button id="api-cancel-btn" class="btn-ghost">Cancel</button>
+    </div>
+    <pre id="api-test-result" class="code-block hidden"></pre>
+  </div>
+</div>
+
+<!-- ── MAIN CONTENT ───────────────────────────────────────────────────── -->
+<main>
+  <!-- TABS -->
+  <div class="tab-bar" role="tablist">
+    <button class="tab active" data-tab="detect" role="tab" aria-selected="true">
+      🔍 Detect Deepfake
+    </button>
+    <button class="tab" data-tab="generate" role="tab" aria-selected="false">
+      🎙 Generate Clone
+    </button>
+    <button class="tab" data-tab="results" role="tab" aria-selected="false">
+      📊 Model Results
+    </button>
+    <button class="tab" data-tab="about" role="tab" aria-selected="false">
+      ℹ About
+    </button>
+  </div>
+
+  <!-- ─── DETECT TAB ──────────────────────────────────────────────────── -->
+  <section id="tab-detect" class="tab-content" role="tabpanel">
+    <h2>Detect Deepfake Audio</h2>
+    <p class="hint">Upload a WAV audio file to classify it as <strong>real</strong> or
+       <strong>deepfake</strong> using our trained ML model.</p>
+
+    <div class="demo-mode-notice" id="detect-demo-notice" hidden>
+      <strong>Demo Mode</strong> — No backend connected.
+      <a href="#" id="detect-open-config">Configure API URL</a> to run real detection,
+      or see the <a href="#tab-results" data-tab-link="results">Model Results</a> tab.
+    </div>
+
+    <form id="detect-form">
+      <div class="upload-area" id="detect-drop-zone">
+        <input type="file" id="detect-file" name="audio" accept=".wav,audio/wav" required hidden />
+        <label for="detect-file" class="upload-label">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6b7280"
+               stroke-width="1.5" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span id="detect-filename">Drop WAV here or click to browse</span>
+        </label>
+      </div>
+
+      <div class="audio-preview hidden" id="detect-preview">
+        <audio id="detect-audio-player" controls preload="none"></audio>
+      </div>
+
+      <div class="format-note">
+        <strong>Supported format:</strong> WAV (mono or stereo, any sample rate — auto-converted server-side).
+        WebM/OGG recordings from the browser are <em>not</em> supported for upload; save as WAV first.
+      </div>
+
+      <button type="submit" class="btn-primary" id="detect-submit">
+        Detect
+      </button>
+    </form>
+
+    <div id="detect-result" class="result-box hidden" aria-live="polite"></div>
+  </section>
+
+  <!-- ─── GENERATE TAB ─────────────────────────────────────────────────── -->
+  <section id="tab-generate" class="tab-content hidden" role="tabpanel">
+    <h2>Generate Voice Clone</h2>
+
+    <div class="ethics-warning">
+      <strong>⚠ Ethical Warning:</strong> You must have <em>explicit written consent</em> from the
+      speaker before cloning their voice. Unauthorised cloning is illegal in many jurisdictions.
+    </div>
+
+    <div class="demo-mode-notice" id="generate-demo-notice" hidden>
+      <strong>Demo Mode</strong> — No backend connected.
+      <a href="#" id="generate-open-config">Configure API URL</a> to enable generation.
+    </div>
+
+    <form id="generate-form">
+      <label for="generate-file">Speaker reference WAV (min 5 s, mono 16 kHz recommended):</label>
+      <div class="upload-area" id="generate-drop-zone">
+        <input type="file" id="generate-file" name="audio" accept=".wav,audio/wav" required hidden />
+        <label for="generate-file" class="upload-label">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6b7280"
+               stroke-width="1.5" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span id="generate-filename">Drop speaker WAV here or click to browse</span>
+        </label>
+      </div>
+
+      <label for="generate-text">Text to synthesise (max 500 chars):</label>
+      <textarea id="generate-text" name="text" rows="3" maxlength="500"
+                placeholder="Enter the text you want the cloned voice to say…" required></textarea>
+      <small id="char-count">0 / 500</small>
+
+      <div class="consent-check">
+        <input type="checkbox" id="consent-checkbox" required />
+        <label for="consent-checkbox">
+          I confirm I have <strong>explicit consent</strong> from the speaker to clone their voice.
+        </label>
+      </div>
+
+      <button type="submit" class="btn-purple" id="generate-submit">
+        Generate Clone
+      </button>
+    </form>
+
+    <div id="generate-result" class="result-box hidden" aria-live="polite"></div>
+  </section>
+
+  <!-- ─── RESULTS TAB ──────────────────────────────────────────────────── -->
+  <section id="tab-results" class="tab-content hidden" role="tabpanel">
+    <h2>Model Evaluation Results</h2>
+    <p class="hint">
+      Three feature extraction strategies were trained and compared using
+      5-fold stratified cross-validation on the combined OSR + synthetic dataset.
+    </p>
+
+    <div id="results-loading" class="loading-msg">Loading results…</div>
+
+    <div id="results-table-container" class="hidden">
+      <table id="results-table" class="metrics-table">
+        <thead>
+          <tr>
+            <th>Model</th><th>Feature Dims</th><th>Accuracy</th>
+            <th>Precision</th><th>Recall</th><th>F1</th>
+            <th>Inference (1k samples)</th>
+          </tr>
+        </thead>
+        <tbody id="results-tbody"></tbody>
+      </table>
+    </div>
+
+    <div id="results-fallback" class="hidden">
+      <p>Results file not found. Run the training pipeline to generate metrics:</p>
+      <pre class="code-block">cd training
+pip install -r requirements.txt
+python train.py --csv ../osr_features.csv --output ../models/</pre>
+    </div>
+
+    <!-- Architecture diagram -->
+    <h3 style="margin-top:2rem;">System Architecture</h3>
+    <div class="mermaid-container">
+      <pre class="diagram-pre">
+flowchart LR
+  subgraph Frontend["Frontend (GitHub Pages)"]
+    UI["index.html\n+ JS / CSS"]
+  end
+  subgraph Backend["Backend (local / container)"]
+    API["FastAPI\n:8000"]
+    DET["/detect\nPOST"]
+    GEN["/generate\nPOST"]
+    API --> DET
+    API --> GEN
+  end
+  subgraph Models["Models (models/)"]
+    M1["MFCC\n.pkl"]
+    M2["FFT\n.pkl"]
+    M3["Hybrid\n.pkl (best)"]
+  end
+  subgraph Training["Training Pipeline"]
+    T["train.py\n5-fold CV"]
+  end
+
+  UI -- "HTTP / CORS" --> API
+  DET -- "load" --> M3
+  GEN -- "Coqui TTS\n/ gTTS fallback" --> GEN
+  T -- "saves" --> Models
+      </pre>
+    </div>
+  </section>
+
+  <!-- ─── ABOUT TAB ─────────────────────────────────────────────────────── -->
+  <section id="tab-about" class="tab-content hidden" role="tabpanel">
+    <h2>About This Project</h2>
+
+    <h3>Overview</h3>
+    <p>
+      <strong>Voice Deepfake Vishing Detector &amp; Generator</strong> is a graduation-level research
+      project that builds a full pipeline for detecting AI-synthesised voices and demonstrating
+      responsible voice-cloning for academic purposes.
+    </p>
+
+    <h3>Detection Pipeline</h3>
+    <ul>
+      <li><strong>MFCC-only</strong>: 13-dimensional Mel Frequency Cepstral Coefficient means —
+          fast, lightweight, baseline model.</li>
+      <li><strong>FFT/Spectral-only</strong>: 6-dimensional feature vector (centroid, bandwidth,
+          rolloff, log band energies) — frequency-domain characteristics.</li>
+      <li><strong>Hybrid (recommended)</strong>: 19-dimensional MFCC + FFT concatenation —
+          best accuracy/recall for IoT-grade deployment.</li>
+    </ul>
+    <p>All models use Gradient Boosting with StandardScaler pre-processing and 5-fold
+       cross-validation evaluation.</p>
+
+    <h3>Generation Pipeline</h3>
+    <p>
+      Voice cloning uses <strong>Coqui TTS YourTTS</strong> (multilingual, zero-shot speaker
+      adaptation from a short reference clip). When Coqui is unavailable, the system falls back
+      to <strong>gTTS</strong> with a clear label indicating the fallback was used.
+    </p>
+
+    <h3>Deployment</h3>
+    <ul>
+      <li><strong>Frontend</strong>: Deployed automatically to GitHub Pages on every push to <code>main</code>.</li>
+      <li><strong>Backend</strong>: Run locally with <code>uvicorn</code>, or via Docker/GHCR container.</li>
+      <li><strong>CI</strong>: GitHub Actions runs lint (ruff) + unit tests on every PR.</li>
+    </ul>
+
+    <h3>Ethics &amp; Security</h3>
+    <ul>
+      <li>Research &amp; educational use only.</li>
+      <li>Consent is mandatory before cloning any voice.</li>
+      <li>No audio is stored server-side beyond the single request lifetime.</li>
+      <li>TLS protects transport but does not authenticate voice authenticity.</li>
+    </ul>
+
+    <h3>Links</h3>
+    <ul>
+      <li><a href="https://github.com/MohammadThabetHassan/Voice-Deepfake-Vishing-Detector-Generator"
+             target="_blank" rel="noopener">GitHub Repository</a></li>
+      <li><a href="docs/threat-model.md" target="_blank">Threat Model</a></li>
+      <li><a href="docs/evaluation.md" target="_blank">Evaluation Methodology</a></li>
+      <li><a href="docs/ethics.md" target="_blank">Ethics Policy</a></li>
+    </ul>
+  </section>
+</main>
+
+<!-- ── LOADING OVERLAY ─────────────────────────────────────────────────── -->
+<div id="loading-overlay" class="overlay hidden" aria-busy="true">
+  <div class="spinner" role="status">
+    <span class="sr-only">Processing…</span>
+  </div>
+  <p id="loading-msg">Processing, please wait…</p>
+</div>
+
+<!-- ── FOOTER ─────────────────────────────────────────────────────────── -->
+<footer>
+  <p>
+    Voice Deepfake Vishing Detector &amp; Generator
+    · <a href="https://github.com/MohammadThabetHassan/Voice-Deepfake-Vishing-Detector-Generator"
+         target="_blank" rel="noopener">GitHub</a>
+    · Research use only
+  </p>
+</footer>
+
+<script src="js/app.js"></script>
+</body>
+</html>
