@@ -38,9 +38,9 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from scipy.io import wavfile
-from scipy import signal as scipy_signal
 import scipy.fftpack as fftpack
+from scipy import signal as scipy_signal
+from scipy.io import wavfile
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import (
     accuracy_score,
