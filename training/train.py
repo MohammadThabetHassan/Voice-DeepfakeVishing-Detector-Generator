@@ -373,9 +373,59 @@ def main():
         print(f"\nLoading CSV: {csv_path}")
         ft, df = load_from_csv(csv_path)
         print(f"  Detected feature type: {ft} | Rows: {len(df)}")
-        metrics, model_path = train_single(df, ft, output_dir)
-        all_results[ft] = metrics
-        best_path = model_path
+        
+        # If the CSV has hybrid/mfcc_legacy features, train all three variants
+        cols = set(df.columns) - {"label", "_extraction_time"}
+        has_mfcc = any(c.startswith("MFCC") for c in cols)
+        has_fft = "centroid" in cols and "bandwidth" in cols
+        
+        if has_mfcc and has_fft:
+            print("  Training all three model variants (MFCC, FFT, Hybrid)...")
+            best_f1 = -1
+            best_path = None
+            
+            # MFCC-only (13 features)
+            mfcc_cols = [c for c in df.columns if c.startswith("MFCC")][:13]
+            df_mfcc = df[mfcc_cols + ["label"]].copy()
+            metrics_mfcc, path_mfcc = train_single(df_mfcc, "mfcc", output_dir)
+            all_results["mfcc"] = metrics_mfcc
+            if metrics_mfcc["f1"] > best_f1:
+                best_f1 = metrics_mfcc["f1"]
+                best_path = path_mfcc
+            
+            # FFT-only: centroid, bandwidth, rolloff + derive band energies from MFCCs
+            fft_cols = ["centroid", "bandwidth", "rolloff"]
+            if "low_energy" in cols:
+                fft_cols.extend(["low_energy", "mid_energy", "high_energy"])
+            # For legacy CSVs without band energies, use centroid/bandwidth/rolloff + jitter/shimmer as proxy
+            elif "jitter" in cols:
+                fft_cols.extend(["jitter", "shimmer"])
+                # Add 3 MFCC coefficients to reach 6 features
+                fft_cols.extend(["MFCC1", "MFCC2", "MFCC3"])
+            else:
+                # Use first 3 MFCCs to reach 6 features
+                fft_cols.extend(["MFCC1", "MFCC2", "MFCC3"])
+            
+            df_fft = df[fft_cols + ["label"]].copy()
+            metrics_fft, path_fft = train_single(df_fft, "fft", output_dir)
+            all_results["fft"] = metrics_fft
+            if metrics_fft["f1"] > best_f1:
+                best_f1 = metrics_fft["f1"]
+                best_path = path_fft
+            
+            # Hybrid: all available features
+            hybrid_cols = [c for c in df.columns if c not in ("label", "_extraction_time")]
+            df_hybrid = df[hybrid_cols + ["label"]].copy()
+            metrics_hybrid, path_hybrid = train_single(df_hybrid, "hybrid", output_dir)
+            all_results["hybrid"] = metrics_hybrid
+            if metrics_hybrid["f1"] > best_f1:
+                best_f1 = metrics_hybrid["f1"]
+                best_path = path_hybrid
+        else:
+            # Single feature type - train as before
+            metrics, model_path = train_single(df, ft, output_dir)
+            all_results[ft] = metrics
+            best_path = model_path
 
     else:
         # Try defaults: look for combined osr_features.csv or training/data/

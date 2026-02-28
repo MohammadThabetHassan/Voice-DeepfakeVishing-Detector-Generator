@@ -1,0 +1,85 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Documentation build
+docs/_build/
+site/
+
+# Frontend build artifacts (not needed in backend container)
+frontend/node_modules/
+_site/
+dist/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.wav
+*.mp3
+*.webm
+*.ogg
+
+# Uploads and generated files
+backend/uploads/
+backend/generated/
+uploads/
+generated/
+
+# Model files (we copy specific ones in Dockerfile)
+# models/*.pkl
+
+# Data files (large)
+*.csv
+!osr_features.csv
+!features.csv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
