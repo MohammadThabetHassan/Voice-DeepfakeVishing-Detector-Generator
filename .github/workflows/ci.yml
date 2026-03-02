@@ -54,8 +54,16 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pytest pytest-asyncio httpx
 
+      - name: Verify backend imports
+        run: |
+          python -c "import fastapi; print(f'FastAPI {fastapi.__version__}')"
+          python -c "import pydantic; print(f'Pydantic {pydantic.__version__}')"
+          python -c "from backend.app import app; print('✅ backend.app imported')"
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
       - name: Run backend unit tests
-        run: pytest backend/tests/ -v --tb=short
+        run: pytest backend/tests/ -v --tb=long
         env:
           PYTHONPATH: ${{ github.workspace }}
 
