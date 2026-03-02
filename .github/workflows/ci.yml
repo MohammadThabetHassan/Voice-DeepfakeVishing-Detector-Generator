@@ -73,20 +73,15 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
 
-      - name: Run backend unit tests
-        run: |
-          pytest backend/tests/ -v --tb=long 2>&1 | tee test-output.txt
-          exit ${PIPESTATUS[0]}
+      - name: Run single health test first
+        run: pytest backend/tests/test_api.py::test_health_returns_ok -v --tb=long --no-header 2>&1; echo "EXIT CODE: $?"
         env:
           PYTHONPATH: ${{ github.workspace }}
 
-      - name: Upload test output on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-output
-          path: test-output.txt
-          retention-days: 5
+      - name: Run all backend unit tests
+        run: pytest backend/tests/ -v --tb=long --no-header
+        env:
+          PYTHONPATH: ${{ github.workspace }}
 
   test-training:
     name: Training Pipeline (smoke test)
