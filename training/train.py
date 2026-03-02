@@ -858,22 +858,32 @@ def train_single(
     # Build classifier based on type
     if classifier_type == "xgboost":
         clf = build_xgboost_classifier()
+        # XGBoost requires numeric labels (0, 1), not strings ('fake', 'real')
+        # Encode: 'fake' -> 1, 'real' -> 0
+        label_map = {"real": 0, "fake": 1}
+        y_train_encoded = np.array([label_map.get(label, label) for label in y_train])
     else:
         clf = build_classifier()
+        y_train_encoded = y_train
 
     # Cross-validation on training set
     t0 = time.perf_counter()
-    cv_metrics = evaluate_model(clf, X_train, y_train)
+    cv_metrics = evaluate_model(clf, X_train, y_train_encoded)
     cv_time = time.perf_counter() - t0
 
     # Train final model on all training data
-    clf.fit(X_train, y_train)
+    clf.fit(X_train, y_train_encoded)
 
     # Evaluate on test set if provided
     if df_test is not None:
         X_test = df_test[feat_cols].values
         y_test = df_test["label"].values
-        test_metrics = evaluate_on_test_set(clf, X_test, y_test)
+        # Encode test labels for XGBoost
+        if classifier_type == "xgboost":
+            y_test_encoded = np.array([label_map.get(label, label) for label in y_test])
+            test_metrics = evaluate_on_test_set(clf, X_test, y_test_encoded)
+        else:
+            test_metrics = evaluate_on_test_set(clf, X_test, y_test)
         print(f"  Test F1={test_metrics['f1']:.4f}  Test Acc={test_metrics['accuracy']:.4f}")
     else:
         test_metrics = None

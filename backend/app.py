@@ -45,6 +45,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
+from typing import List
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -1351,7 +1352,7 @@ async def detect(
 
 @app.post("/batch-detect")
 @limiter.limit(RATE_LIMIT_BATCH_DETECT)
-async def batch_detect(request: Request, audio: list[UploadFile] = File(...)):
+async def batch_detect(request: Request, audio: List[UploadFile] = File(...)):
     """
     Classify multiple audio files as real or deepfake.
 
