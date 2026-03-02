@@ -46,9 +46,12 @@ import traceback
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 # ─── path setup ───────────────────────────────────────────────────────────────
 BACKEND_DIR = Path(__file__).parent.resolve()
@@ -65,6 +68,27 @@ if str(ROOT_DIR) not in sys.path:
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("deepfake-api")
 
+# ─── security configuration ───────────────────────────────────────────────────
+# File upload limits
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_AUDIO_DURATION_SECONDS = 60  # 60 seconds
+MIN_AUDIO_DURATION_SECONDS = 0.5  # 500 ms
+
+# CORS configuration - allow specific origins in production
+CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
+if CORS_ORIGINS == ["*"]:
+    log.warning("CORS configured to allow all origins. Set CORS_ORIGINS env var for production.")
+
+# Rate limiting configuration
+RATE_LIMIT_HEALTH = os.environ.get("RATE_LIMIT_HEALTH", "60/minute")
+RATE_LIMIT_DETECT = os.environ.get("RATE_LIMIT_DETECT", "30/minute")
+RATE_LIMIT_BATCH_DETECT = os.environ.get("RATE_LIMIT_BATCH_DETECT", "10/minute")
+RATE_LIMIT_GENERATE = os.environ.get("RATE_LIMIT_GENERATE", "10/minute")
+RATE_LIMIT_CONVERT = os.environ.get("RATE_LIMIT_CONVERT", "10/minute")
+
+# ─── rate limiter ─────────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+
 # ─── app ──────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Voice Deepfake API",
@@ -77,9 +101,14 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# Add rate limiter to app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS middleware with configurable origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -280,18 +309,65 @@ def _convert_to_wav(src: Path, dst: Path) -> bool:
     return False
 
 
+def _validate_file_size(upload: UploadFile) -> None:
+    """Validate file size is within limits."""
+    # Check content-length header if available
+    content_length = upload.size
+    if content_length and content_length > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024 * 1024):.1f} MB.",
+        )
+
+
+def _validate_audio_duration(wav_path: Path) -> None:
+    """Validate audio duration is within limits."""
+    try:
+        from scipy.io import wavfile
+
+        sr, data = wavfile.read(str(wav_path))
+        duration = len(data) / sr
+
+        if duration < MIN_AUDIO_DURATION_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Audio too short. Minimum duration is {MIN_AUDIO_DURATION_SECONDS}s.",
+            )
+        if duration > MAX_AUDIO_DURATION_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Audio too long. Maximum duration is {MAX_AUDIO_DURATION_SECONDS}s.",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning(f"Could not validate audio duration: {e}")
+        # Don't fail if we can't validate duration
+
+
 def _save_upload(
     upload: UploadFile,
     apply_noise_reduction: bool = False,
     apply_normalization: bool = False,
 ) -> Path:
     """Persist upload to uploads/, normalise to mono WAV 16 kHz. Returns WAV path."""
+    # Validate file size
+    _validate_file_size(upload)
+
     uid = uuid.uuid4().hex
     raw_suffix = Path(upload.filename or "audio.wav").suffix.lower() or ".wav"
     raw_path = UPLOADS_DIR / f"{uid}_raw{raw_suffix}"
     wav_path = UPLOADS_DIR / f"{uid}.wav"
 
     data = upload.file.read()
+
+    # Check actual file size after reading
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024 * 1024):.1f} MB.",
+        )
+
     raw_path.write_bytes(data)
 
     if raw_suffix == ".wav":
@@ -312,6 +388,9 @@ def _save_upload(
         wav_path = _reduce_noise(wav_path)
     if apply_normalization:
         wav_path = _normalize_loudness(wav_path)
+
+    # Validate audio duration after conversion
+    _validate_audio_duration(wav_path)
 
     return wav_path
 
@@ -1108,7 +1187,8 @@ def _extract_legacy_18_features(wav_path: Path):
 
 
 @app.get("/health")
-def health():
+@limiter.limit(RATE_LIMIT_HEALTH)
+def health(request: Request):
     """Returns service health and capability status."""
     detector = _load_detector()
     _load_xtts()
@@ -1148,7 +1228,9 @@ def health():
 
 
 @app.post("/detect")
+@limiter.limit(RATE_LIMIT_DETECT)
 async def detect(
+    request: Request,
     audio: UploadFile = File(...),
     apply_noise_reduction: bool = Query(False, description="Apply noise reduction preprocessing"),
     apply_normalization: bool = Query(
@@ -1268,7 +1350,8 @@ async def detect(
 
 
 @app.post("/batch-detect")
-async def batch_detect(audio: list[UploadFile] = File(...)):
+@limiter.limit(RATE_LIMIT_BATCH_DETECT)
+async def batch_detect(request: Request, audio: list[UploadFile] = File(...)):
     """
     Classify multiple audio files as real or deepfake.
 
@@ -1410,7 +1493,9 @@ async def batch_detect(audio: list[UploadFile] = File(...)):
 
 
 @app.post("/generate")
+@limiter.limit(RATE_LIMIT_GENERATE)
 async def generate(
+    request: Request,
     audio: UploadFile = File(...),
     text: str = Form(...),
     language: str = Form("en"),
@@ -1548,7 +1633,9 @@ async def generate(
 
 
 @app.post("/convert-voice")
+@limiter.limit(RATE_LIMIT_CONVERT)
 async def convert_voice(
+    request: Request,
     source_audio: UploadFile = File(..., description="The voice to convert FROM"),
     target_audio: UploadFile = File(
         ..., description="The voice to convert TO (reference for target voice characteristics)"
@@ -1664,4 +1751,13 @@ async def convert_voice(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    # Get reload mode from environment (default False for production)
+    reload_mode = os.environ.get("UVICORN_RELOAD", "false").lower() == "true"
+
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=reload_mode,
+        access_log=True,
+    )
