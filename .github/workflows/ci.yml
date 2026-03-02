@@ -52,7 +52,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r backend/requirements.txt
-          pip install pytest pytest-asyncio httpx
+          pip install pytest httpx
+          pip list | grep -i "fastapi\|pydantic\|starlette\|anyio"
 
       - name: Verify backend imports
         run: |
@@ -73,18 +74,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
 
       - name: Run backend unit tests
-        run: |
-          python -c "
-          import sys, traceback
-          try:
-              from backend.app import app
-              print('Import OK, running tests...')
-          except Exception as e:
-              traceback.print_exc()
-              print('IMPORT FAILED - skipping tests')
-              sys.exit(1)
-          "
-          pytest backend/tests/ -v --tb=long
+        run: pytest backend/tests/ -v --tb=long 2>&1 || (echo "--- TESTS FAILED ---" && pytest backend/tests/ -v --tb=long 2>&1 | tail -50 && exit 1)
         env:
           PYTHONPATH: ${{ github.workspace }}
 
