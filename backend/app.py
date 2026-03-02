@@ -1185,7 +1185,7 @@ def _extract_legacy_18_features(wav_path: Path):
 # ─── endpoints ────────────────────────────────────────────────────────────────
 
 
-@app.get("/health")
+@app.get("/health", response_model=None)
 @limiter.limit(RATE_LIMIT_HEALTH)
 def health(request: Request):
     """Returns service health and capability status."""
@@ -1226,7 +1226,7 @@ def health(request: Request):
     }
 
 
-@app.post("/detect")
+@app.post("/detect", response_model=None)
 @limiter.limit(RATE_LIMIT_DETECT)
 async def detect(
     request: Request,
@@ -1348,7 +1348,7 @@ async def detect(
         _cleanup(wav_path)
 
 
-@app.post("/generate")
+@app.post("/generate", response_model=None)
 @limiter.limit(RATE_LIMIT_GENERATE)
 async def generate(
     request: Request,
@@ -1488,7 +1488,7 @@ async def generate(
         _cleanup(speaker_wav, out_path)
 
 
-@app.post("/convert-voice")
+@app.post("/convert-voice", response_model=None)
 @limiter.limit(RATE_LIMIT_CONVERT)
 async def convert_voice(
     request: Request,

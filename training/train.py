@@ -864,7 +864,7 @@ def train_single(
         # Encode: 'fake' -> 1, 'real' -> 0
         label_map = {"real": 0, "fake": 1}
         y_train_encoded = np.array([label_map.get(label, label) for label in y_train])
-        pos_label = 1  # Use numeric pos_label for XGBoost
+        pos_label = 1  # Use numeric pos_label for XGBoost (1 = fake)
     else:
         clf = build_classifier()
         y_train_encoded = y_train
