@@ -1,209 +1,383 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Voice Deepfake Detector & Generator</title>
   <link rel="stylesheet" href="css/main.css" />
+  <style>
+    /* Accessibility Styles */
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* Skip links */
+    .skip-link {
+      position: absolute;
+      top: -40px;
+      left: 0;
+      background: var(--brand-accent, #4f6ef7);
+      color: white;
+      padding: 8px 16px;
+      text-decoration: none;
+      font-weight: bold;
+      z-index: 10000;
+      border-radius: 0 0 4px 0;
+      transition: top 0.2s;
+    }
+
+    .skip-link:focus {
+      top: 0;
+      outline: 3px solid currentColor;
+      outline-offset: 2px;
+    }
+
+    /* Focus indicators */
+    *:focus {
+      outline: 2px solid var(--brand-accent, #4f6ef7);
+      outline-offset: 2px;
+    }
+
+    *:focus-visible {
+      outline: 2px solid var(--brand-accent, #4f6ef7);
+      outline-offset: 2px;
+    }
+
+    *:focus:not(:focus-visible) {
+      outline: none;
+    }
+
+    /* Button focus states */
+    button:focus-visible,
+    [role="button"]:focus-visible {
+      outline: 3px solid var(--brand-accent, #4f6ef7);
+      outline-offset: 3px;
+      box-shadow: 0 0 0 4px rgba(79, 110, 247, 0.3);
+    }
+
+    /* Tab focus states */
+    .tab:focus-visible {
+      outline: 3px solid var(--brand-accent, #4f6ef7);
+      outline-offset: -3px;
+    }
+
+    /* Input focus states */
+    input:focus,
+    textarea:focus {
+      outline: 2px solid var(--brand-accent, #4f6ef7);
+      outline-offset: 0;
+      border-color: var(--brand-accent, #4f6ef7) !important;
+      box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.2);
+    }
+
+    /* Upload area focus */
+    .upload-area:focus,
+    .upload-area:focus-within {
+      outline: 3px solid var(--brand-accent, #4f6ef7);
+      outline-offset: 2px;
+    }
+
+    /* Link focus states */
+    a:focus-visible {
+      outline: 2px solid var(--brand-accent, #4f6ef7);
+      outline-offset: 3px;
+    }
+
+    /* Checkbox focus */
+    input[type="checkbox"]:focus-visible {
+      outline: 2px solid var(--brand-accent, #4f6ef7);
+      outline-offset: 2px;
+    }
+
+    /* High contrast mode support */
+    @media (prefers-contrast: high) {
+      *:focus,
+      *:focus-visible {
+        outline: 3px solid CanvasText;
+        outline-offset: 2px;
+      }
+    }
+
+    /* Reduced motion support */
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
 </head>
 <body>
 
+<!-- ── SKIP LINKS ─────────────────────────────────────────────────────── -->
+<a href="#main-content" class="skip-link">Skip to main content</a>
+<a href="#tab-detect" class="skip-link">Skip to detection</a>
+
+<!-- ── SCREEN READER ANNOUNCEMENTS ────────────────────────────────────── -->
+<div id="sr-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
 <!-- ── ETHICS BANNER ──────────────────────────────────────────────────── -->
-<div id="ethics-banner" role="alert">
+<div id="ethics-banner" role="alert" aria-live="polite" aria-atomic="true">
   <strong>Research &amp; Educational Use Only</strong> — This tool is provided strictly for academic
   research. Do <em>not</em> generate voice clones without <em>explicit written consent</em> from the
   speaker. By using this tool you agree to comply with all applicable laws.
-  <button id="ethics-dismiss" aria-label="Dismiss banner">I Understand</button>
+  <button id="ethics-dismiss" aria-label="Dismiss ethics warning banner">I Understand</button>
 </div>
 
 <!-- ── HEADER ─────────────────────────────────────────────────────────── -->
 <header>
   <div class="header-inner">
-    <h1>
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/>
-        <line x1="8" y1="23" x2="16" y2="23"/>
-      </svg>
-      Voice Deepfake Vishing Detector &amp; Generator
-    </h1>
+    <div class="header-top">
+      <h1>
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+        Voice Deepfake Vishing Detector &amp; Generator
+      </h1>
+      <button id="theme-toggle" class="theme-toggle" aria-label="Toggle between light and dark mode" title="Toggle dark mode (keyboard shortcut: T)">
+        <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/>
+          <line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/>
+          <line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+        <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+    </div>
     <p class="tagline">Academic graduation project · ML pipeline: MFCC vs FFT vs Hybrid</p>
   </div>
 </header>
 
 <!-- ── BACKEND STATUS ─────────────────────────────────────────────────── -->
-<div id="api-status-bar">
-  <span id="api-status-indicator" class="status-dot status-unknown" aria-live="polite"></span>
-  <span id="api-status-text">Checking backend…</span>
-  <button id="api-config-btn" title="Configure API URL">⚙ Config</button>
+<div id="api-status-bar" aria-label="Backend connection status">
+  <span id="api-status-indicator" class="status-dot status-unknown" aria-hidden="true"></span>
+  <span id="api-status-text" aria-live="polite" aria-atomic="true">Checking backend…</span>
+  <button id="api-config-btn" aria-label="Configure backend API URL" title="Configure API URL (keyboard shortcut: Ctrl/Cmd + Shift + C)">⚙ Config</button>
 </div>
 
 <!-- ── API CONFIG MODAL ───────────────────────────────────────────────── -->
-<div id="api-config-modal" class="modal" hidden>
-  <div class="modal-box">
-    <h2>Backend Configuration</h2>
-    <p>The UI is hosted on GitHub Pages (static only). For full Detect / Generate functionality,
+<div id="api-config-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="api-config-title" aria-describedby="api-config-desc" hidden>
+  <div class="modal-box" role="document">
+    <h2 id="api-config-title">Backend Configuration</h2>
+    <p id="api-config-desc">The UI is hosted on GitHub Pages (static only). For full Detect / Generate functionality,
        run the backend locally or in a container.</p>
     <label for="api-url-input">API Base URL</label>
     <input type="url" id="api-url-input" placeholder="http://localhost:8000"
-           autocomplete="off" spellcheck="false" />
+           autocomplete="off" spellcheck="false" aria-describedby="api-url-help" />
+    <small id="api-url-help" class="sr-only">Enter the URL where your backend API is running</small>
     <div class="modal-actions">
-      <button id="api-save-btn" class="btn-primary">Save &amp; Test</button>
-      <button id="api-clear-btn" class="btn-secondary">Clear (Demo Mode)</button>
-      <button id="api-cancel-btn" class="btn-ghost">Cancel</button>
+      <button id="api-save-btn" class="btn-primary" aria-label="Save and test API connection">Save &amp; Test</button>
+      <button id="api-clear-btn" class="btn-secondary" aria-label="Clear API URL and use demo mode">Clear (Demo Mode)</button>
+      <button id="api-cancel-btn" class="btn-ghost" aria-label="Cancel and close configuration">Cancel</button>
     </div>
-    <pre id="api-test-result" class="code-block hidden"></pre>
+    <pre id="api-test-result" class="code-block hidden" role="status" aria-live="polite" aria-atomic="true"></pre>
   </div>
 </div>
 
 <!-- ── MAIN CONTENT ───────────────────────────────────────────────────── -->
-<main>
+<main id="main-content" tabindex="-1">
   <!-- TABS -->
-  <div class="tab-bar" role="tablist">
-    <button class="tab active" data-tab="detect" role="tab" aria-selected="true">
-      🔍 Detect Deepfake
+  <div class="tab-bar" role="tablist" aria-label="Main navigation">
+    <button class="tab active" data-tab="detect" role="tab" aria-selected="true" aria-controls="tab-detect" tabindex="0" id="tab-btn-detect" accesskey="d">
+      <span aria-hidden="true">🔍</span> Detect Deepfake <span class="sr-only">(keyboard shortcut: Ctrl/Cmd + D)</span>
     </button>
-    <button class="tab" data-tab="generate" role="tab" aria-selected="false">
-      🎙 Generate Clone
+    <button class="tab" data-tab="generate" role="tab" aria-selected="false" aria-controls="tab-generate" tabindex="-1" id="tab-btn-generate" accesskey="g">
+      <span aria-hidden="true">🎙</span> Generate Clone <span class="sr-only">(keyboard shortcut: Ctrl/Cmd + G)</span>
     </button>
-    <button class="tab" data-tab="results" role="tab" aria-selected="false">
-      📊 Model Results
+    <button class="tab" data-tab="results" role="tab" aria-selected="false" aria-controls="tab-results" tabindex="-1" id="tab-btn-results" accesskey="r">
+      <span aria-hidden="true">📊</span> Model Results <span class="sr-only">(keyboard shortcut: Ctrl/Cmd + R)</span>
     </button>
-    <button class="tab" data-tab="about" role="tab" aria-selected="false">
-      ℹ About
+    <button class="tab" data-tab="about" role="tab" aria-selected="false" aria-controls="tab-about" tabindex="-1" id="tab-btn-about" accesskey="a">
+      <span aria-hidden="true">ℹ</span> About
     </button>
   </div>
 
   <!-- ─── DETECT TAB ──────────────────────────────────────────────────── -->
-  <section id="tab-detect" class="tab-content" role="tabpanel">
+  <section id="tab-detect" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-detect" tabindex="0">
     <h2>Detect Deepfake Audio</h2>
-    <p class="hint">Upload a WAV audio file to classify it as <strong>real</strong> or
+    <p class="hint" id="detect-hint">Upload a WAV audio file to classify it as <strong>real</strong> or
        <strong>deepfake</strong> using our trained ML model.</p>
 
-    <div class="demo-mode-notice" id="detect-demo-notice" hidden>
+    <div class="demo-mode-notice" id="detect-demo-notice" role="status" aria-live="polite" hidden>
       <strong>Demo Mode</strong> — No backend connected.
       <a href="#" id="detect-open-config">Configure API URL</a> to run real detection,
       or see the <a href="#tab-results" data-tab-link="results">Model Results</a> tab.
     </div>
 
-    <form id="detect-form">
-      <div class="upload-area" id="detect-drop-zone">
-        <input type="file" id="detect-file" name="audio" accept=".wav,audio/wav" required hidden />
+    <form id="detect-form" aria-describedby="detect-hint">
+      <div class="upload-area" id="detect-drop-zone" role="button" tabindex="0" aria-label="Upload WAV audio file for detection. Press Enter or Space to open file dialog.">
+        <input type="file" id="detect-file" name="audio" accept=".wav,audio/wav" required hidden aria-describedby="file-format-help" />
         <label for="detect-file" class="upload-label">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6b7280"
-               stroke-width="1.5" aria-hidden="true">
+               stroke-width="1.5" aria-hidden="true" focusable="false">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
-          <span id="detect-filename">Drop WAV here or click to browse</span>
+          <span id="detect-filename">Drop WAV here or click to browse <span class="sr-only">(keyboard shortcut: Ctrl/Cmd + U)</span></span>
         </label>
       </div>
+      <small id="file-format-help" class="sr-only">Accepted format: WAV audio files</small>
 
-      <div class="audio-preview hidden" id="detect-preview">
+      <div class="audio-preview hidden" id="detect-preview" role="region" aria-label="Audio preview">
         <audio id="detect-audio-player" controls preload="none"></audio>
+        <canvas id="waveform-canvas" aria-hidden="true" role="img" aria-label="Audio waveform visualization"></canvas>
       </div>
 
-      <div class="format-note">
+      <div class="recording-controls" role="region" aria-label="Microphone recording controls">
+        <div class="recording-row">
+          <button type="button" class="btn-record" id="record-btn" aria-label="Start recording audio from microphone">
+            <span class="record-icon" aria-hidden="true"></span> Record Audio
+          </button>
+          <button type="button" class="btn-stop hidden" id="stop-record-btn" aria-label="Stop recording audio">
+            <span class="stop-icon" aria-hidden="true"></span> Stop Recording
+          </button>
+          <span class="recording-status hidden" id="recording-status" aria-live="polite" aria-atomic="true">
+            <span class="recording-dot" aria-hidden="true"></span> Recording in progress
+          </span>
+          <span class="recording-timer hidden" id="recording-timer" aria-label="Recording duration">00:00</span>
+        </div>
+        <p class="recording-hint" id="recording-hint">Or record directly from your microphone — will be converted to WAV automatically.</p>
+      </div>
+
+      <div class="format-note" id="format-note-detect" role="note">
         <strong>Supported format:</strong> WAV (mono or stereo, any sample rate — auto-converted server-side).
         WebM/OGG recordings from the browser are <em>not</em> supported for upload; save as WAV first.
       </div>
 
-      <button type="submit" class="btn-primary" id="detect-submit">
+      <button type="submit" class="btn-primary" id="detect-submit" aria-label="Analyze audio file for deepfake detection">
         Detect
       </button>
     </form>
 
-    <div id="detect-result" class="result-box hidden" aria-live="polite"></div>
+    <div id="detect-result" class="result-box hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+
+    <!-- ─── DETECTION HISTORY ─────────────────────────────────────────────── -->
+    <div id="history-section" class="history-section" role="region" aria-label="Detection history">
+      <div class="history-header">
+        <h3>Recent Detections</h3>
+        <button id="clear-history-btn" class="btn-ghost btn-sm" aria-label="Clear all detection history">Clear History</button>
+      </div>
+      <div id="history-list" class="history-list" role="list" aria-label="List of recent detections">
+        <p class="history-empty">No detections yet. Upload an audio file to get started.</p>
+      </div>
+    </div>
   </section>
 
   <!-- ─── GENERATE TAB ─────────────────────────────────────────────────── -->
-  <section id="tab-generate" class="tab-content hidden" role="tabpanel">
+  <section id="tab-generate" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-generate" tabindex="0">
     <h2>Generate Voice Clone</h2>
 
-    <div class="ethics-warning">
+    <div class="ethics-warning" role="alert" aria-live="polite">
       <strong>⚠ Ethical Warning:</strong> You must have <em>explicit written consent</em> from the
       speaker before cloning their voice. Unauthorised cloning is illegal in many jurisdictions.
     </div>
 
-    <div class="engine-info" id="generate-engine-info">
+    <div class="engine-info" id="generate-engine-info" role="status" aria-live="polite" aria-atomic="true">
       <strong>Engine:</strong> <span id="tts-engine-label">checking…</span> &nbsp;
-      <a href="https://github.com/index-tts/index-tts" target="_blank" rel="noopener">IndexTTS2 ↗</a>
+      <a href="https://github.com/index-tts/index-tts" target="_blank" rel="noopener" aria-label="Learn more about IndexTTS2 engine (opens in new tab)">IndexTTS2 ↗</a>
     </div>
 
-    <div class="demo-mode-notice" id="generate-demo-notice" hidden>
+    <div class="demo-mode-notice" id="generate-demo-notice" role="status" aria-live="polite" hidden>
       <strong>Demo Mode</strong> — No backend connected.
       <a href="#" id="generate-open-config">Configure API URL</a> to enable generation.
     </div>
 
-    <form id="generate-form">
+    <form id="generate-form" aria-describedby="generate-instructions">
+      <p id="generate-instructions" class="sr-only">Upload a speaker reference audio file and enter text to generate a voice clone. You must confirm consent before proceeding.</p>
+
       <label for="generate-file">Speaker reference WAV (min 5 s, mono 16 kHz recommended):</label>
-      <div class="upload-area" id="generate-drop-zone">
-        <input type="file" id="generate-file" name="audio" accept=".wav,audio/wav" required hidden />
+      <div class="upload-area" id="generate-drop-zone" role="button" tabindex="0" aria-label="Upload speaker reference WAV file. Press Enter or Space to open file dialog.">
+        <input type="file" id="generate-file" name="audio" accept=".wav,audio/wav" required hidden aria-describedby="generate-file-help" />
         <label for="generate-file" class="upload-label">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#6b7280"
-               stroke-width="1.5" aria-hidden="true">
+               stroke-width="1.5" aria-hidden="true" focusable="false">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
           <span id="generate-filename">Drop speaker WAV here or click to browse</span>
         </label>
       </div>
+      <small id="generate-file-help" class="sr-only">Minimum 5 seconds, mono 16 kHz recommended</small>
 
       <label for="generate-text">Text to synthesise (max 500 chars):</label>
       <textarea id="generate-text" name="text" rows="3" maxlength="500"
-                placeholder="Enter the text you want the cloned voice to say…" required></textarea>
-      <small id="char-count">0 / 500</small>
+                placeholder="Enter the text you want the cloned voice to say…" required
+                aria-describedby="char-count generate-text-help"></textarea>
+      <small id="char-count" aria-live="polite" aria-atomic="true">0 / 500</small>
+      <small id="generate-text-help" class="sr-only">Maximum 500 characters allowed</small>
 
       <div class="consent-check">
-        <input type="checkbox" id="consent-checkbox" required />
+        <input type="checkbox" id="consent-checkbox" required aria-describedby="consent-help" />
         <label for="consent-checkbox">
           I confirm I have <strong>explicit consent</strong> from the speaker to clone their voice.
         </label>
       </div>
+      <small id="consent-help" class="sr-only">Checking this box confirms you have obtained explicit written consent from the speaker</small>
 
-      <button type="submit" class="btn-purple" id="generate-submit">
+      <button type="submit" class="btn-purple" id="generate-submit" aria-label="Generate voice clone from uploaded speaker reference">
         Generate Clone
       </button>
     </form>
 
-    <div id="generate-result" class="result-box hidden" aria-live="polite"></div>
+    <div id="generate-result" class="result-box hidden" role="status" aria-live="polite" aria-atomic="true"></div>
   </section>
 
   <!-- ─── RESULTS TAB ──────────────────────────────────────────────────── -->
-  <section id="tab-results" class="tab-content hidden" role="tabpanel">
+  <section id="tab-results" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-results" tabindex="0">
     <h2>Model Evaluation Results</h2>
-    <p class="hint">
+    <p class="hint" id="results-hint">
       Three feature extraction strategies were trained and compared using
       5-fold stratified cross-validation on the combined OSR + synthetic dataset.
     </p>
 
-    <div id="results-loading" class="loading-msg">Loading results…</div>
+    <div id="results-loading" class="loading-msg" role="status" aria-live="polite">Loading results…</div>
 
-    <div id="results-table-container" class="hidden">
+    <div id="results-table-container" class="hidden" role="region" aria-label="Model performance comparison table">
       <table id="results-table" class="metrics-table">
+        <caption class="sr-only">Comparison of model performance metrics across different feature extraction methods</caption>
         <thead>
           <tr>
-            <th>Model</th><th>Feature Dims</th><th>Accuracy</th>
-            <th>Precision</th><th>Recall</th><th>F1</th>
-            <th>Inference (1k samples)</th>
+            <th scope="col">Model</th><th scope="col">Feature Dims</th><th scope="col">Accuracy</th>
+            <th scope="col">Precision</th><th scope="col">Recall</th><th scope="col">F1</th>
+            <th scope="col">Inference (1k samples)</th>
           </tr>
         </thead>
         <tbody id="results-tbody"></tbody>
       </table>
     </div>
 
-    <div id="results-fallback" class="hidden">
+    <div id="results-fallback" class="hidden" role="status" aria-live="polite">
       <p>Results file not found. Run the training pipeline to generate metrics:</p>
-      <pre class="code-block">cd training
+      <pre class="code-block" aria-label="Command to run training pipeline">cd training
 pip install -r requirements.txt
 python train.py --csv ../osr_features.csv --output ../models/</pre>
     </div>
 
     <!-- Architecture diagram -->
     <h3 style="margin-top:2rem;">System Architecture</h3>
-    <div class="mermaid-container">
-      <pre class="diagram-pre">
+    <div class="mermaid-container" role="img" aria-label="System architecture diagram showing frontend, backend, models, and training pipeline components">
+      <pre class="diagram-pre" aria-hidden="true">
 flowchart LR
   subgraph Frontend["Frontend (GitHub Pages)"]
     UI["index.html\n+ JS / CSS"]
@@ -233,7 +407,7 @@ flowchart LR
   </section>
 
   <!-- ─── ABOUT TAB ─────────────────────────────────────────────────────── -->
-  <section id="tab-about" class="tab-content hidden" role="tabpanel">
+  <section id="tab-about" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-btn-about" tabindex="0">
     <h2>About This Project</h2>
 
     <h3>Overview</h3>
@@ -258,7 +432,7 @@ flowchart LR
     <h3>Generation Pipeline</h3>
     <p>
       Voice cloning uses <strong>IndexTTS2</strong>
-      (<a href="https://github.com/index-tts/index-tts" target="_blank" rel="noopener">index-tts/index-tts</a>
+      (<a href="https://github.com/index-tts/index-tts" target="_blank" rel="noopener" aria-label="IndexTTS2 GitHub repository (opens in new tab)">index-tts/index-tts</a>
       by Bilibili) — an industrial-level zero-shot TTS system that clones voice timbre and
       emotional expression from a short reference clip. It supports duration control and
       emotion-style separation.
@@ -287,28 +461,28 @@ flowchart LR
     <h3>Links</h3>
     <ul>
       <li><a href="https://github.com/MohammadThabetHassan/Voice-Deepfake-Vishing-Detector-Generator"
-             target="_blank" rel="noopener">GitHub Repository</a></li>
-      <li><a href="docs/threat-model.md" target="_blank">Threat Model</a></li>
-      <li><a href="docs/evaluation.md" target="_blank">Evaluation Methodology</a></li>
-      <li><a href="docs/ethics.md" target="_blank">Ethics Policy</a></li>
+             target="_blank" rel="noopener" aria-label="GitHub Repository (opens in new tab)">GitHub Repository</a></li>
+      <li><a href="docs/threat-model.md" target="_blank" aria-label="Threat Model documentation (opens in new tab)">Threat Model</a></li>
+      <li><a href="docs/evaluation.md" target="_blank" aria-label="Evaluation Methodology documentation (opens in new tab)">Evaluation Methodology</a></li>
+      <li><a href="docs/ethics.md" target="_blank" aria-label="Ethics Policy documentation (opens in new tab)">Ethics Policy</a></li>
     </ul>
   </section>
 </main>
 
 <!-- ── LOADING OVERLAY ─────────────────────────────────────────────────── -->
-<div id="loading-overlay" class="overlay hidden" aria-busy="true">
-  <div class="spinner" role="status">
+<div id="loading-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="loading-msg" aria-busy="true">
+  <div class="spinner" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Processing in progress">
     <span class="sr-only">Processing…</span>
   </div>
-  <p id="loading-msg">Processing, please wait…</p>
+  <p id="loading-msg" aria-live="polite" aria-atomic="true">Processing, please wait…</p>
 </div>
 
 <!-- ── FOOTER ─────────────────────────────────────────────────────────── -->
-<footer>
+<footer role="contentinfo">
   <p>
     Voice Deepfake Vishing Detector &amp; Generator
     · <a href="https://github.com/MohammadThabetHassan/Voice-Deepfake-Vishing-Detector-Generator"
-         target="_blank" rel="noopener">GitHub</a>
+         target="_blank" rel="noopener" aria-label="View project on GitHub (opens in new tab)">GitHub</a>
     · Research use only
   </p>
 </footer>
