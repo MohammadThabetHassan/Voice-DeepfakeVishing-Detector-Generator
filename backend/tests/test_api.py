@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 # ─── Import the app ──────────────────────────────────────────────────────────
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.app import app, _mfcc_features, _fft_features, _extract_legacy_18_features
@@ -22,9 +23,11 @@ client = TestClient(app)
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+
 def make_wav_bytes(duration_s: float = 1.0, sr: int = 16000, freq_hz: float = 440.0) -> bytes:
     """Generate a minimal synthetic WAV file in memory."""
     import math
+
     n_samples = int(sr * duration_s)
     amplitude = 16000
     buf = io.BytesIO()
@@ -43,6 +46,7 @@ def make_wav_bytes(duration_s: float = 1.0, sr: int = 16000, freq_hz: float = 44
 
 # ─── Health ───────────────────────────────────────────────────────────────────
 
+
 def test_health_returns_ok():
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -53,6 +57,7 @@ def test_health_returns_ok():
 
 
 # ─── Detect ───────────────────────────────────────────────────────────────────
+
 
 def test_detect_no_file_returns_422():
     resp = client.post("/detect")
@@ -74,11 +79,12 @@ def test_detect_valid_wav():
 
 
 def test_detect_short_audio():
-    """Even very short audio should not crash the server."""
+    """Very short audio is rejected by duration validation (min 0.5s)."""
     wav_bytes = make_wav_bytes(duration_s=0.1)
     files = {"audio": ("short.wav", io.BytesIO(wav_bytes), "audio/wav")}
     resp = client.post("/detect", files=files)
-    assert resp.status_code in (200, 503)
+    # 400 = too short, 200 = model inference succeeded, 503 = no model loaded
+    assert resp.status_code in (200, 400, 503)
 
 
 def test_detect_wrong_content_type():
@@ -90,6 +96,7 @@ def test_detect_wrong_content_type():
 
 
 # ─── Generate ─────────────────────────────────────────────────────────────────
+
 
 def test_generate_no_file_returns_422():
     resp = client.post("/generate", data={"text": "hello"})
@@ -132,8 +139,10 @@ def test_generate_returns_audio_or_503():
 
 # ─── Feature extraction unit tests ───────────────────────────────────────────
 
+
 def test_mfcc_features_shape():
     import numpy as np
+
     segment = np.random.randn(16000).astype(np.float32)
     feats = _mfcc_features(segment, 16000)
     assert feats.shape == (13,), f"Expected (13,), got {feats.shape}"
@@ -141,6 +150,7 @@ def test_mfcc_features_shape():
 
 def test_fft_features_shape():
     import numpy as np
+
     segment = np.random.randn(16000).astype(np.float32)
     feats = _fft_features(segment, 16000)
     assert feats.shape == (6,), f"Expected (6,), got {feats.shape}"
@@ -148,6 +158,7 @@ def test_fft_features_shape():
 
 def test_fft_features_no_nan():
     import numpy as np
+
     segment = np.random.randn(16000).astype(np.float32)
     feats = _fft_features(segment, 16000)
     assert not np.any(np.isnan(feats)), "FFT features contain NaN"
@@ -156,6 +167,7 @@ def test_fft_features_no_nan():
 def test_mfcc_features_silent():
     """Silent audio should not crash feature extraction."""
     import numpy as np
+
     segment = np.zeros(16000, dtype=np.float32)
     feats = _mfcc_features(segment, 16000)
     assert feats.shape == (13,)
@@ -180,6 +192,7 @@ def test_legacy_18_features():
 
 
 # ─── Docs ─────────────────────────────────────────────────────────────────────
+
 
 def test_openapi_docs_accessible():
     resp = client.get("/docs")

@@ -3,7 +3,7 @@
 # Last updated: 2026-03-02
 # Python version: 3.11
 
-fastapi==0.115.8
+fastapi==0.115.14
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
 pydub==0.25.1
