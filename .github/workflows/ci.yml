@@ -58,7 +58,16 @@ jobs:
         run: |
           python -c "import fastapi; print(f'FastAPI {fastapi.__version__}')"
           python -c "import pydantic; print(f'Pydantic {pydantic.__version__}')"
-          python -c "from backend.app import app; print('✅ backend.app imported')"
+          python -c "import starlette; print(f'Starlette {starlette.__version__}')"
+          python -c "
+          try:
+              from backend.app import app
+              print('backend.app imported OK')
+          except Exception as e:
+              import traceback
+              traceback.print_exc()
+              raise
+          "
         env:
           PYTHONPATH: ${{ github.workspace }}
 
