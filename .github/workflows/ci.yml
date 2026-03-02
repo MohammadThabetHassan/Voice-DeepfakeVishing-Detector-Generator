@@ -59,20 +59,32 @@ jobs:
           python -c "import fastapi; print(f'FastAPI {fastapi.__version__}')"
           python -c "import pydantic; print(f'Pydantic {pydantic.__version__}')"
           python -c "import starlette; print(f'Starlette {starlette.__version__}')"
+          head -5 backend/app.py
           python -c "
+          import sys, traceback
           try:
               from backend.app import app
               print('backend.app imported OK')
           except Exception as e:
-              import traceback
               traceback.print_exc()
-              raise
-          "
+              sys.exit(1)
+          " 2>&1 || true
         env:
           PYTHONPATH: ${{ github.workspace }}
 
       - name: Run backend unit tests
-        run: pytest backend/tests/ -v --tb=long
+        run: |
+          python -c "
+          import sys, traceback
+          try:
+              from backend.app import app
+              print('Import OK, running tests...')
+          except Exception as e:
+              traceback.print_exc()
+              print('IMPORT FAILED - skipping tests')
+              sys.exit(1)
+          "
+          pytest backend/tests/ -v --tb=long
         env:
           PYTHONPATH: ${{ github.workspace }}
 
