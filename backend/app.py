@@ -43,8 +43,6 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import List, Optional, Tuple
-
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -81,7 +79,6 @@ if CORS_ORIGINS == ["*"]:
 # Rate limiting configuration
 RATE_LIMIT_HEALTH = os.environ.get("RATE_LIMIT_HEALTH", "60/minute")
 RATE_LIMIT_DETECT = os.environ.get("RATE_LIMIT_DETECT", "30/minute")
-RATE_LIMIT_BATCH_DETECT = os.environ.get("RATE_LIMIT_BATCH_DETECT", "10/minute")
 RATE_LIMIT_GENERATE = os.environ.get("RATE_LIMIT_GENERATE", "10/minute")
 RATE_LIMIT_CONVERT = os.environ.get("RATE_LIMIT_CONVERT", "10/minute")
 

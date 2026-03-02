@@ -899,13 +899,13 @@ def train_single(
         clf.predict(bench_feats)
     bench_ms = round((time.perf_counter() - bench_start), 3)
 
-    # Combine metrics
+    # Combine metrics — use top-level keys for compatibility with results table
     metrics = {
-        "cv_accuracy": cv_metrics["accuracy"],
-        "cv_precision": cv_metrics["precision"],
-        "cv_recall": cv_metrics["recall"],
-        "cv_f1": cv_metrics["f1"],
-        "cv_confusion_matrix": cv_metrics["confusion_matrix"],
+        "accuracy": cv_metrics["accuracy"],
+        "precision": cv_metrics["precision"],
+        "recall": cv_metrics["recall"],
+        "f1": cv_metrics["f1"],
+        "confusion_matrix": cv_metrics["confusion_matrix"],
         "cv_time_s": round(cv_time, 2),
     }
 
@@ -934,7 +934,7 @@ def train_single(
     }
     joblib.dump(model_obj, model_path)
     print(f"  Saved: {model_path}")
-    print(f"  CV F1={metrics['cv_f1']:.4f}  CV Acc={metrics['cv_accuracy']:.4f}")
+    print(f"  CV F1={metrics['f1']:.4f}  CV Acc={metrics['accuracy']:.4f}")
 
     return metrics, model_path
 
@@ -986,7 +986,7 @@ def main():
         if metrics_gbm:
             results[f"{ft}_gbm"] = metrics_gbm
             # Use test F1 if available, otherwise CV F1
-            f1_score = metrics_gbm.get("test_f1", metrics_gbm.get("cv_f1", 0))
+            f1_score = metrics_gbm.get("test_f1", metrics_gbm.get("f1", 0))
             if f1_score > best_local_f1:
                 best_local_f1 = f1_score
                 best_local_path = path_gbm
@@ -997,7 +997,7 @@ def main():
         )
         if metrics_xgb:
             results[f"{ft}_xgboost"] = metrics_xgb
-            f1_score = metrics_xgb.get("test_f1", metrics_xgb.get("cv_f1", 0))
+            f1_score = metrics_xgb.get("test_f1", metrics_xgb.get("f1", 0))
             if f1_score > best_local_f1:
                 best_local_f1 = f1_score
                 best_local_path = path_xgb
