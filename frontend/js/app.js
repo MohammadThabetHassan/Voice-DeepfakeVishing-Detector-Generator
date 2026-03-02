@@ -17,11 +17,180 @@
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const LS_KEY_API = 'deepfake_api_url';
+const LS_KEY_THEME = 'deepfake_theme';
+const LS_KEY_HISTORY = 'deepfake_history';
+const MAX_HISTORY_ITEMS = 10;
 const RESULTS_PATH = '../models/results.json';   // relative from frontend/
 const HEALTH_TIMEOUT_MS = 5000;
 
 // ─── STATE ───────────────────────────────────────────────────────────────────
 let apiBaseUrl = (localStorage.getItem(LS_KEY_API) || '').replace(/\/$/, '');
+
+// Recording state
+let mediaRecorder = null;
+let recordedChunks = [];
+let recordingStartTime = 0;
+let recordingTimerInterval = null;
+let isRecording = false;
+let audioContext = null;
+
+// Focus management state
+let lastFocusedElement = null;
+let modalFocusTrap = null;
+
+// ─── ACCESSIBILITY UTILITIES ─────────────────────────────────────────────────
+
+/**
+ * Announce a message to screen readers via the aria-live region
+ */
+function announceToScreenReader(message, priority = 'polite') {
+  const announcer = document.getElementById('sr-announcer');
+  if (!announcer) return;
+
+  // Clear previous content to ensure announcement
+  announcer.setAttribute('aria-live', 'off');
+  announcer.textContent = '';
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      announcer.setAttribute('aria-live', priority);
+      announcer.textContent = message;
+    });
+  });
+}
+
+/**
+ * Save the currently focused element before opening a modal
+ */
+function saveFocus() {
+  lastFocusedElement = document.activeElement;
+}
+
+/**
+ * Restore focus to the element that triggered the modal
+ */
+function restoreFocus() {
+  if (lastFocusedElement && lastFocusedElement.focus) {
+    lastFocusedElement.focus();
+    lastFocusedElement = null;
+  }
+}
+
+/**
+ * Get all focusable elements within a container
+ */
+function getFocusableElements(container) {
+  const selector = [
+    'button:not([disabled])',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    'a[href]',
+    '[tabindex]:not([tabindex="-1"])',
+    '[contenteditable]'
+  ].join(', ');
+
+  return [...container.querySelectorAll(selector)].filter(el => {
+    return el.offsetParent !== null && !el.hasAttribute('hidden');
+  });
+}
+
+/**
+ * Trap focus within a modal/container
+ */
+function trapFocus(container) {
+  const focusableElements = getFocusableElements(container);
+  const firstElement = focusableElements[0];
+  const lastElement = focusableElements[focusableElements.length - 1];
+
+  function handleTabKey(e) {
+    if (e.key !== 'Tab') return;
+
+    if (e.shiftKey) {
+      if (document.activeElement === firstElement) {
+        e.preventDefault();
+        lastElement.focus();
+      }
+    } else {
+      if (document.activeElement === lastElement) {
+        e.preventDefault();
+        firstElement.focus();
+      }
+    }
+  }
+
+  container.addEventListener('keydown', handleTabKey);
+
+  // Focus first element
+  if (firstElement) {
+    firstElement.focus();
+  }
+
+  return () => container.removeEventListener('keydown', handleTabKey);
+}
+
+/**
+ * Handle Escape key to close modals
+ */
+function handleEscapeKey(e) {
+  if (e.key === 'Escape') {
+    const modal = document.querySelector('.modal:not([hidden])');
+    const overlay = document.querySelector('.overlay:not(.hidden)');
+
+    if (modal) {
+      e.preventDefault();
+      closeConfigModal();
+    } else if (overlay && overlay.id === 'loading-overlay') {
+      // Don't close loading overlay with Escape
+      return;
+    }
+  }
+}
+
+/**
+ * Handle keyboard shortcuts
+ */
+function handleKeyboardShortcuts(e) {
+  // Only handle if not in an input/textarea
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+    return;
+  }
+
+  const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const ctrlOrCmd = isMac ? e.metaKey : e.ctrlKey;
+
+  if (ctrlOrCmd) {
+    switch (e.key.toLowerCase()) {
+      case 'd':
+        e.preventDefault();
+        activateTab('detect');
+        $('#tab-detect')?.focus();
+        announceToScreenReader('Switched to Detect Deepfake tab');
+        break;
+      case 'g':
+        e.preventDefault();
+        activateTab('generate');
+        $('#tab-generate')?.focus();
+        announceToScreenReader('Switched to Generate Clone tab');
+        break;
+      case 'r':
+        e.preventDefault();
+        activateTab('results');
+        $('#tab-results')?.focus();
+        announceToScreenReader('Switched to Model Results tab');
+        break;
+      case 'u':
+        e.preventDefault();
+        const activeTab = document.querySelector('.tab-content:not(.hidden)');
+        const fileInput = activeTab?.querySelector('input[type="file"]');
+        if (fileInput) {
+          fileInput.click();
+          announceToScreenReader('File upload dialog opened');
+        }
+        break;
+    }
+  }
+}
 
 // ─── DOM HELPERS ─────────────────────────────────────────────────────────────
 const $  = (sel, ctx = document) => ctx.querySelector(sel);
@@ -29,10 +198,31 @@ const $$ = (sel, ctx = document) => [...ctx.querySelectorAll(sel)];
 
 function showLoading(msg = 'Processing, please wait…') {
   $('#loading-msg').textContent = msg;
-  $('#loading-overlay').classList.remove('hidden');
+  const overlay = $('#loading-overlay');
+  overlay.classList.remove('hidden');
+  overlay.setAttribute('aria-hidden', 'false');
+  saveFocus();
+
+  // Update progressbar
+  const spinner = overlay.querySelector('[role="progressbar"]');
+  if (spinner) {
+    spinner.setAttribute('aria-valuenow', '50');
+  }
+
+  announceToScreenReader(msg, 'polite');
 }
 function hideLoading() {
-  $('#loading-overlay').classList.add('hidden');
+  const overlay = $('#loading-overlay');
+  overlay.classList.add('hidden');
+  overlay.setAttribute('aria-hidden', 'true');
+
+  // Reset progressbar
+  const spinner = overlay.querySelector('[role="progressbar"]');
+  if (spinner) {
+    spinner.setAttribute('aria-valuenow', '0');
+  }
+
+  restoreFocus();
 }
 
 function setResult(containerId, html, type = 'info') {
@@ -40,29 +230,94 @@ function setResult(containerId, html, type = 'info') {
   el.className = `result-box result-${type}`;
   el.innerHTML = html;
   el.classList.remove('hidden');
+
+  // Move focus to result for screen readers
+  el.setAttribute('tabindex', '-1');
+  el.focus();
+
+  // Announce to screen reader
+  const typeLabels = {
+    'info': 'Information',
+    'success': 'Success',
+    'error': 'Error',
+    'real': 'Real voice detected',
+    'fake': 'Deepfake detected'
+  };
+  const label = typeLabels[type] || 'Result';
+
+  // Extract text content for announcement
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = html;
+  const textContent = tempDiv.textContent || tempDiv.innerText || '';
+  announceToScreenReader(`${label}: ${textContent.substring(0, 200)}`, 'polite');
 }
 
 function clearResult(containerId) {
   const el = $(`#${containerId}`);
   el.className = 'result-box hidden';
   el.innerHTML = '';
+  el.removeAttribute('tabindex');
 }
 
 // ─── TAB NAVIGATION ──────────────────────────────────────────────────────────
 function activateTab(name) {
-  $$('.tab').forEach(t => {
+  const tabs = $$('.tab');
+  const panels = $$('.tab-content');
+
+  tabs.forEach(t => {
     const active = t.dataset.tab === name;
     t.classList.toggle('active', active);
     t.setAttribute('aria-selected', active);
+    t.setAttribute('tabindex', active ? '0' : '-1');
   });
-  $$('.tab-content').forEach(s => {
-    s.classList.toggle('hidden', s.id !== `tab-${name}`);
+
+  panels.forEach(s => {
+    const isActive = s.id === `tab-${name}`;
+    s.classList.toggle('hidden', !isActive);
+    s.setAttribute('aria-hidden', !isActive);
   });
+
   window.location.hash = name;
 }
 
-$$('.tab').forEach(btn => {
+// Tab keyboard navigation
+$$('.tab').forEach((btn, index, allTabs) => {
   btn.addEventListener('click', () => activateTab(btn.dataset.tab));
+
+  btn.addEventListener('keydown', (e) => {
+    let newIndex = index;
+
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        e.preventDefault();
+        newIndex = (index + 1) % allTabs.length;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        e.preventDefault();
+        newIndex = (index - 1 + allTabs.length) % allTabs.length;
+        break;
+      case 'Home':
+        e.preventDefault();
+        newIndex = 0;
+        break;
+      case 'End':
+        e.preventDefault();
+        newIndex = allTabs.length - 1;
+        break;
+      case 'Enter':
+      case ' ':
+        e.preventDefault();
+        activateTab(btn.dataset.tab);
+        return;
+    }
+
+    if (newIndex !== index) {
+      allTabs[newIndex].focus();
+      activateTab(allTabs[newIndex].dataset.tab);
+    }
+  });
 });
 
 // Deep-link support via hash
@@ -162,14 +417,35 @@ function updateDemoNotices(show) {
 }
 
 // ─── API CONFIG MODAL ─────────────────────────────────────────────────────────
+let modalCleanup = null;
+
 function openConfigModal() {
+  saveFocus();
   const modal = $('#api-config-modal');
   $('#api-url-input').value = apiBaseUrl;
   $('#api-test-result').classList.add('hidden');
   modal.hidden = false;
+  modal.setAttribute('aria-hidden', 'false');
+
+  // Trap focus in modal
+  modalCleanup = trapFocus(modal);
+
+  announceToScreenReader('Backend configuration dialog opened');
 }
+
 function closeConfigModal() {
-  $('#api-config-modal').hidden = true;
+  const modal = $('#api-config-modal');
+  modal.hidden = true;
+  modal.setAttribute('aria-hidden', 'true');
+
+  // Remove focus trap
+  if (modalCleanup) {
+    modalCleanup();
+    modalCleanup = null;
+  }
+
+  restoreFocus();
+  announceToScreenReader('Configuration dialog closed');
 }
 
 $('#api-config-btn').addEventListener('click', openConfigModal);
@@ -222,6 +498,57 @@ $('#api-clear-btn').addEventListener('click', () => {
   setTimeout(() => { closeConfigModal(); checkApiHealth(); }, 800);
 });
 
+// ─── WAVEFORM VISUALIZATION ───────────────────────────────────────────────────
+function drawWaveform(audioBuffer, canvas) {
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width = canvas.clientWidth;
+  const height = canvas.height = canvas.clientHeight;
+  const data = audioBuffer.getChannelData(0);
+  const step = Math.ceil(data.length / width);
+  const amp = height / 2;
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.beginPath();
+  ctx.strokeStyle = '#4f46e5';
+  ctx.lineWidth = 2;
+
+  for (let x = 0; x < width; x++) {
+    const start = x * step;
+    const end = Math.min(start + step, data.length);
+    let min = 1, max = -1;
+    for (let i = start; i < end; i++) {
+      const val = data[i];
+      if (val < min) min = val;
+      if (val > max) max = val;
+    }
+    const y1 = amp + min * amp;
+    const y2 = amp + max * amp;
+    if (x === 0) {
+      ctx.moveTo(x, y1);
+      ctx.lineTo(x, y2);
+    } else {
+      ctx.lineTo(x, y1);
+      ctx.lineTo(x, y2);
+    }
+  }
+  ctx.stroke();
+}
+
+async function loadAndDrawWaveform(file) {
+  const canvas = $('#waveform-canvas');
+  if (!canvas) return;
+
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const arrayBuffer = await file.arrayBuffer();
+    const audioBuffer = await ac.decodeAudioData(arrayBuffer);
+    drawWaveform(audioBuffer, canvas);
+    ac.close();
+  } catch (err) {
+    console.error('Failed to draw waveform:', err);
+  }
+}
+
 // ─── FILE UPLOAD HELPERS ──────────────────────────────────────────────────────
 function setupUploadArea(dropZoneId, fileInputId, filenameId, previewId) {
   const zone  = $(`#${dropZoneId}`);
@@ -238,10 +565,15 @@ function setupUploadArea(dropZoneId, fileInputId, filenameId, previewId) {
       const audio = preview.querySelector('audio');
       if (audio) { audio.src = url; }
       preview.classList.remove('hidden');
+      preview.setAttribute('aria-hidden', 'false');
+      loadAndDrawWaveform(file);
     }
+    announceToScreenReader(`File selected: ${file.name}`);
   }
 
-  input.addEventListener('change', () => handleFile(input.files[0]));
+  input.addEventListener('change', () => {
+    handleFile(input.files[0]);
+  });
 
   zone.addEventListener('dragover', e => {
     e.preventDefault();
@@ -260,10 +592,238 @@ function setupUploadArea(dropZoneId, fileInputId, filenameId, previewId) {
       handleFile(file);
     }
   });
+
+  // Keyboard support for drop zone
+  zone.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      input.click();
+    }
+  });
+
+  // Make zone focusable
+  zone.setAttribute('tabindex', '0');
 }
 
 setupUploadArea('detect-drop-zone', 'detect-file', 'detect-filename', 'detect-preview');
 setupUploadArea('generate-drop-zone', 'generate-file', 'generate-filename', null);
+
+// ─── MICROPHONE RECORDING ─────────────────────────────────────────────────────
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const secs = (seconds % 60).toString().padStart(2, '0');
+  return `${mins}:${secs}`;
+}
+
+function updateRecordingTimer() {
+  const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+  const timerEl = $('#recording-timer');
+  if (timerEl) timerEl.textContent = formatTime(elapsed);
+}
+
+function updateRecordingUI(recording) {
+  const recordBtn = $('#record-btn');
+  const stopBtn = $('#stop-record-btn');
+  const statusEl = $('#recording-status');
+  const timerEl = $('#recording-timer');
+
+  if (recording) {
+    if (recordBtn) recordBtn.classList.add('hidden');
+    if (stopBtn) stopBtn.classList.remove('hidden');
+    if (statusEl) statusEl.classList.remove('hidden');
+    if (timerEl) timerEl.classList.remove('hidden');
+  } else {
+    if (recordBtn) recordBtn.classList.remove('hidden');
+    if (stopBtn) stopBtn.classList.add('hidden');
+    if (statusEl) statusEl.classList.add('hidden');
+    if (timerEl) {
+      timerEl.classList.add('hidden');
+      timerEl.textContent = '00:00';
+    }
+  }
+}
+
+async function startRecording() {
+  try {
+    announceToScreenReader('Starting audio recording. Please speak now.', 'assertive');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // Try to use audio/webm codec, fallback to default
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/ogg';
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
+    recordedChunks = [];
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordedChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      announceToScreenReader('Recording stopped. Processing audio...', 'polite');
+      const audioBlob = new Blob(recordedChunks, { type: mimeType });
+      await processRecordedAudio(audioBlob);
+
+      // Stop all tracks to release microphone
+      stream.getTracks().forEach(track => track.stop());
+    };
+
+    mediaRecorder.onerror = (e) => {
+      console.error('MediaRecorder error:', e);
+      announceToScreenReader('Recording error occurred. Please try again.', 'assertive');
+      alert('Recording error occurred. Please try again.');
+      stopRecording();
+    };
+
+    mediaRecorder.start(100); // Collect data every 100ms
+    isRecording = true;
+    recordingStartTime = Date.now();
+    recordingTimerInterval = setInterval(updateRecordingTimer, 1000);
+    updateRecordingUI(true);
+
+    announceToScreenReader('Recording started. Press stop recording button when finished.', 'polite');
+
+  } catch (err) {
+    console.error('Error accessing microphone:', err);
+    let errorMsg = '';
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      errorMsg = 'Microphone permission denied. Please allow access to record audio.';
+    } else if (err.name === 'NotFoundError') {
+      errorMsg = 'No microphone found. Please connect a microphone and try again.';
+    } else {
+      errorMsg = `Could not access microphone: ${err.message}`;
+    }
+    announceToScreenReader(errorMsg, 'assertive');
+    alert(errorMsg);
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && isRecording) {
+    mediaRecorder.stop();
+    isRecording = false;
+    clearInterval(recordingTimerInterval);
+    updateRecordingUI(false);
+  }
+}
+
+async function processRecordedAudio(audioBlob) {
+  showLoading('Converting to WAV…');
+  try {
+    const wavBlob = await convertToWav(audioBlob);
+
+    // Create a File object from the Blob
+    const wavFile = new File([wavBlob], `recording_${Date.now()}.wav`, { type: 'audio/wav' });
+
+    // Populate the file input
+    const fileInput = $('#detect-file');
+    const dt = new DataTransfer();
+    dt.items.add(wavFile);
+    fileInput.files = dt.files;
+
+    // Update UI to show the file
+    const label = $('#detect-filename');
+    label.textContent = wavFile.name;
+    label.closest('.upload-label').classList.add('has-file');
+
+    // Update audio preview
+    const preview = $('#detect-preview');
+    const audioPlayer = preview.querySelector('audio');
+    if (audioPlayer) {
+      const url = URL.createObjectURL(wavFile);
+      audioPlayer.src = url;
+      preview.classList.remove('hidden');
+    }
+
+    // Draw waveform for recorded audio
+    loadAndDrawWaveform(wavFile);
+
+    hideLoading();
+  } catch (err) {
+    hideLoading();
+    console.error('Error converting audio:', err);
+    alert(`Failed to convert audio: ${err.message}`);
+  }
+}
+
+async function convertToWav(audioBlob) {
+  // Create audio context
+  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Decode the audio data
+  const arrayBuffer = await audioBlob.arrayBuffer();
+  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+  // Resample to 16kHz mono
+  const targetSampleRate = 16000;
+  const numberOfChannels = 1;
+  const offlineContext = new OfflineAudioContext(
+    numberOfChannels,
+    audioBuffer.duration * targetSampleRate,
+    targetSampleRate
+  );
+
+  const source = offlineContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(offlineContext.destination);
+  source.start(0);
+
+  const resampledBuffer = await offlineContext.startRendering();
+
+  // Convert to 16-bit PCM WAV
+  return audioBufferToWav(resampledBuffer);
+}
+
+function audioBufferToWav(audioBuffer) {
+  const numberOfChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+  const bytesPerSample = bitDepth / 8;
+
+  const samples = audioBuffer.getChannelData(0); // Mono
+  const dataLength = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+
+  // Write WAV header
+  const writeString = (offset, string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  };
+
+  // RIFF chunk
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeString(8, 'WAVE');
+
+  // fmt chunk
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, format, true);
+  view.setUint16(22, numberOfChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numberOfChannels * bytesPerSample, true);
+  view.setUint16(32, numberOfChannels * bytesPerSample, true);
+  view.setUint16(34, bitDepth, true);
+
+  // data chunk
+  writeString(36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  // Write samples (16-bit PCM)
+  const offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset + i * 2, sample * 0x7FFF, true);
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
 
 // ─── DETECT FORM ──────────────────────────────────────────────────────────────
 $('#detect-form').addEventListener('submit', async e => {
@@ -282,7 +842,12 @@ $('#detect-form').addEventListener('submit', async e => {
   }
 
   const file = $('#detect-file').files[0];
-  if (!file) { alert('Please select a WAV file.'); return; }
+  if (!file) {
+    announceToScreenReader('Please select a WAV file before submitting.', 'assertive');
+    alert('Please select a WAV file.');
+    $('#detect-file').focus();
+    return;
+  }
 
   const fd = new FormData();
   fd.append('audio', file, file.name);
@@ -316,18 +881,34 @@ $('#detect-form').addEventListener('submit', async e => {
       ${data.notes ? `<p style="margin-top:.5rem;font-size:.85rem;">${data.notes}</p>` : ''}
     `, type);
 
+    saveDetectionResult(data, file.name);
+
+    // Additional screen reader announcement for the result
+    const resultMsg = isFake
+      ? `Deepfake detected with ${conf} confidence`
+      : `Real voice detected with ${conf} confidence`;
+    announceToScreenReader(resultMsg, 'assertive');
+
   } catch (err) {
     hideLoading();
     setResult('detect-result',
       `<div class="result-label">Network Error</div><p>${err.message}</p>
        <p class="result-meta">Is the backend running at <code>${apiBaseUrl}</code>?</p>`,
       'error');
+    announceToScreenReader('Network error. Please check your connection and try again.', 'assertive');
   }
 });
 
 // ─── GENERATE FORM ────────────────────────────────────────────────────────────
 $('#generate-text').addEventListener('input', function() {
-  $('#char-count').textContent = `${this.value.length} / 500`;
+  const count = this.value.length;
+  $('#char-count').textContent = `${count} / 500`;
+  // Announce when approaching limit
+  if (count === 490) {
+    announceToScreenReader('10 characters remaining', 'polite');
+  } else if (count === 500) {
+    announceToScreenReader('Maximum character limit reached', 'polite');
+  }
 });
 
 $('#generate-form').addEventListener('submit', async e => {
@@ -348,9 +929,24 @@ $('#generate-form').addEventListener('submit', async e => {
   const text = $('#generate-text').value.trim();
   const consent = $('#consent-checkbox').checked;
 
-  if (!file) { alert('Please select a speaker WAV file.'); return; }
-  if (!text)  { alert('Please enter text to synthesise.'); return; }
-  if (!consent) { alert('You must confirm consent before generating.'); return; }
+  if (!file) {
+    announceToScreenReader('Please select a speaker WAV file.', 'assertive');
+    alert('Please select a speaker WAV file.');
+    $('#generate-file').focus();
+    return;
+  }
+  if (!text) {
+    announceToScreenReader('Please enter text to synthesise.', 'assertive');
+    alert('Please enter text to synthesise.');
+    $('#generate-text').focus();
+    return;
+  }
+  if (!consent) {
+    announceToScreenReader('You must confirm consent before generating.', 'assertive');
+    alert('You must confirm consent before generating.');
+    $('#consent-checkbox').focus();
+    return;
+  }
 
   const fd = new FormData();
   fd.append('audio', file, file.name);
@@ -385,14 +981,22 @@ $('#generate-form').addEventListener('submit', async e => {
           Time: ${data.generation_time_s != null ? data.generation_time_s + 's' : 'N/A'}
         </div>
         <a href="${url}" download="generated_voice.wav" class="btn-secondary"
-           style="display:inline-flex;margin-top:.6rem;font-size:.8rem;">
+           style="display:inline-flex;margin-top:.6rem;font-size:.8rem;"
+           aria-label="Download generated voice as WAV file">
           ⬇ Download WAV
         </a>
       `, isFallback ? 'error' : 'real');
+
+      // Announce result
+      const resultMsg = isFallback
+        ? 'Voice generation complete using fallback TTS. Note: This is not a voice clone.'
+        : 'Voice clone generated successfully';
+      announceToScreenReader(resultMsg, 'assertive');
     } else {
       setResult('generate-result',
         `<div class="result-label">Error</div><p>No audio returned from server.</p>`,
         'error');
+      announceToScreenReader('Error: No audio returned from server.', 'assertive');
     }
 
   } catch (err) {
@@ -400,6 +1004,7 @@ $('#generate-form').addEventListener('submit', async e => {
     setResult('generate-result',
       `<div class="result-label">Network Error</div><p>${err.message}</p>`,
       'error');
+    announceToScreenReader('Network error during voice generation. Please try again.', 'assertive');
   }
 });
 
@@ -408,6 +1013,83 @@ function b64ToBlob(b64, mime) {
   const arr = new Uint8Array(bytes.length);
   for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
   return new Blob([arr], { type: mime });
+}
+
+// ─── HISTORY MANAGEMENT ──────────────────────────────────────────────────────
+function formatTimestamp(date) {
+  const d = new Date(date);
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const timeStr = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+  if (isToday) {
+    return timeStr;
+  }
+  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${timeStr}`;
+}
+
+function saveDetectionResult(result, filename) {
+  const history = loadHistory();
+  const entry = {
+    timestamp: Date.now(),
+    filename: filename || 'Unknown',
+    prediction: result.prediction,
+    confidence: result.confidence,
+    model_used: result.model_used || 'unknown'
+  };
+
+  history.unshift(entry);
+
+  if (history.length > MAX_HISTORY_ITEMS) {
+    history.pop();
+  }
+
+  localStorage.setItem(LS_KEY_HISTORY, JSON.stringify(history));
+  renderHistory();
+}
+
+function loadHistory() {
+  try {
+    const data = localStorage.getItem(LS_KEY_HISTORY);
+    return data ? JSON.parse(data) : [];
+  } catch (e) {
+    console.error('Failed to load history:', e);
+    return [];
+  }
+}
+
+function clearHistory() {
+  localStorage.removeItem(LS_KEY_HISTORY);
+  renderHistory();
+}
+
+function renderHistory() {
+  const history = loadHistory();
+  const container = $('#history-list');
+
+  if (!container) return;
+
+  if (history.length === 0) {
+    container.innerHTML = '<p class="history-empty">No detections yet. Upload an audio file to get started.</p>';
+    return;
+  }
+
+  container.innerHTML = history.map(item => {
+    const isFake = item.prediction === 'fake' || item.prediction === '1' || item.prediction === 1;
+    const badgeClass = isFake ? 'fake' : 'real';
+    const badgeText = isFake ? 'Deepfake' : 'Real';
+    const confidence = item.confidence != null ? `${(item.confidence * 100).toFixed(1)}%` : 'N/A';
+
+    return `
+      <div class="history-item">
+        <span class="history-timestamp">${formatTimestamp(item.timestamp)}</span>
+        <span class="history-filename" title="${item.filename}">${item.filename}</span>
+        <span class="history-badge ${badgeClass}">${badgeText}</span>
+        <span class="history-confidence">${confidence}</span>
+        <span class="history-model">${item.model_used}</span>
+      </div>
+    `;
+  }).join('');
 }
 
 // ─── RESULTS TAB ─────────────────────────────────────────────────────────────
@@ -481,9 +1163,106 @@ $$('.tab').forEach(btn => {
   btn.addEventListener('click', () => activateTabWithHooks(btn.dataset.tab));
 });
 
+// ─── RECORDING BUTTON EVENT LISTENERS ─────────────────────────────────────────
+$('#record-btn')?.addEventListener('click', startRecording);
+$('#stop-record-btn')?.addEventListener('click', stopRecording);
+
+// ─── THEME MANAGEMENT ─────────────────────────────────────────────────────────
+function initTheme() {
+  const savedTheme = localStorage.getItem(LS_KEY_THEME);
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+  setTheme(theme);
+}
+
+function setTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem(LS_KEY_THEME, theme);
+}
+
+function toggleTheme() {
+  const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+  const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+  setTheme(newTheme);
+}
+
+// ─── KEYBOARD SHORTCUTS & ACCESSIBILITY INIT ───────────────────────────────────
+document.addEventListener('keydown', handleEscapeKey);
+document.addEventListener('keydown', handleKeyboardShortcuts);
+
+// Make history items keyboard accessible
+function enhanceHistoryAccessibility() {
+  const historyItems = document.querySelectorAll('.history-item');
+  historyItems.forEach((item, index) => {
+    item.setAttribute('tabindex', '0');
+    item.setAttribute('role', 'listitem');
+
+    // Allow keyboard navigation between history items
+    item.addEventListener('keydown', (e) => {
+      const items = [...document.querySelectorAll('.history-item')];
+      let newIndex = index;
+
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault();
+          newIndex = Math.min(index + 1, items.length - 1);
+          break;
+        case 'ArrowUp':
+          e.preventDefault();
+          newIndex = Math.max(index - 1, 0);
+          break;
+        case 'Home':
+          e.preventDefault();
+          newIndex = 0;
+          break;
+        case 'End':
+          e.preventDefault();
+          newIndex = items.length - 1;
+          break;
+      }
+
+      if (newIndex !== index && items[newIndex]) {
+        items[newIndex].focus();
+      }
+    });
+  });
+}
+
+// Override renderHistory to add accessibility enhancements
+const originalRenderHistory = renderHistory;
+window.renderHistory = function() {
+  originalRenderHistory();
+  enhanceHistoryAccessibility();
+};
+
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 (async () => {
+  initTheme();
+  renderHistory();
   await checkApiHealth();
   // If results tab active on load
   if (window.location.hash === '#results') loadResults();
+
+  // Set initial aria-hidden states
+  $$('.tab-content').forEach(panel => {
+    panel.setAttribute('aria-hidden', panel.classList.contains('hidden'));
+  });
+
+  // Announce page load
+  announceToScreenReader('Voice Deepfake Detector and Generator loaded. Use Ctrl or Command plus D, G, R to navigate tabs.', 'polite');
 })();
+
+// History clear button event listener
+$('#clear-history-btn')?.addEventListener('click', () => {
+  if (confirm('Clear all detection history?')) {
+    clearHistory();
+    announceToScreenReader('Detection history cleared', 'polite');
+  }
+});
+
+// Theme toggle event listener
+$('#theme-toggle')?.addEventListener('click', () => {
+  toggleTheme();
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  announceToScreenReader(`Switched to ${isDark ? 'dark' : 'light'} mode`, 'polite');
+});

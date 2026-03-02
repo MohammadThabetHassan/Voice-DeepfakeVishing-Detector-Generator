@@ -7,7 +7,10 @@ scipy>=1.11.0
 numpy>=1.24.0
 pandas>=2.0.0
 scikit-learn>=1.3.0
+xgboost>=2.0.0
 joblib>=1.3.0
+noisereduce>=3.0.0
+pyloudnorm>=0.1.1
 
 # ── TTS: gTTS fallback (lightweight, requires internet) ────────────────────
 gtts>=2.5.0
@@ -18,7 +21,20 @@ gtts>=2.5.0
 #   macOS:          brew install ffmpeg
 #   Windows:        choco install ffmpeg  (or download from https://ffmpeg.org)
 
-# ── TTS: IndexTTS2 (RECOMMENDED for real voice cloning) ───────────────────
+# ── TTS: XTTS v2 (RECOMMENDED for voice cloning — pip installable) ─────────
+# XTTS v2 is the easiest way to get high-quality voice cloning:
+#   pip install TTS>=0.22.0
+#
+# First run will auto-download the model (~2 GB) to ~/.local/share/tts/
+# Supports languages: en, es, fr, de, it, pt, pl, tr, ru, nl, cs, ar, zh, ja, hu, ko
+#
+# Hardware:
+#   CPU:  Works but slower (10–30 s per synthesis)
+#   GPU:  Recommended (NVIDIA, CUDA 11.8+, ~4 GB VRAM)
+#         The model will auto-detect and use GPU if available.
+# TTS>=0.22.0
+
+# ── TTS: IndexTTS2 (alternative voice cloning, source install) ─────────────
 # IndexTTS2 is NOT a pip package — it must be installed from source:
 #
 #   Step 1: Clone the repo
