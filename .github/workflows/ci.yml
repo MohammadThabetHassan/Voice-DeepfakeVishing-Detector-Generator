@@ -44,6 +44,11 @@ jobs:
       - name: Show installed versions
         run: pip list | grep -iE "fastapi|pydantic|starlette|anyio|slowapi"
 
+      - name: Diagnose test collection
+        run: python -c "from backend.app import app, _mfcc_features, _fft_features, _extract_legacy_18_features; print('All test imports OK')"
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
       - name: Run backend unit tests
         run: pytest backend/tests/ -v --tb=short
         env:
