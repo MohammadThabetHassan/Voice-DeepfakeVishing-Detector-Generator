@@ -16,16 +16,13 @@ jobs:
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install ruff
         run: pip install "ruff>=0.4.0"
 
-      - name: Lint backend and training (warnings only for now)
-        run: ruff check backend/ training/ || echo "Linting issues found but not blocking deployment"
-
-      - name: Lint legacy scripts (warnings only, non-blocking)
-        run: ruff check pipeline.py server.py train_detector.py || true
+      - name: Lint backend and training
+        run: ruff check backend/ training/ || echo "Linting issues found but not blocking"
 
   test-backend:
     name: Backend Unit Tests
@@ -36,50 +33,19 @@ jobs:
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-backend-${{ runner.os }}-3.11-${{ hashFiles('backend/requirements.txt') }}
-          restore-keys: pip-backend-${{ runner.os }}-3.11-
-
-      - name: Clear pip cache
-        run: pip cache purge || true
-
-      - name: Install backend dependencies
+      - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r backend/requirements.txt
           pip install pytest httpx
-          pip list | grep -i "fastapi\|pydantic\|starlette\|anyio"
 
-      - name: Verify backend imports
-        run: |
-          python -c "import fastapi; print(f'FastAPI {fastapi.__version__}')"
-          python -c "import pydantic; print(f'Pydantic {pydantic.__version__}')"
-          python -c "import starlette; print(f'Starlette {starlette.__version__}')"
-          head -5 backend/app.py
-          python -c "
-          import sys, traceback
-          try:
-              from backend.app import app
-              print('backend.app imported OK')
-          except Exception as e:
-              traceback.print_exc()
-              sys.exit(1)
-          " 2>&1 || true
-        env:
-          PYTHONPATH: ${{ github.workspace }}
+      - name: Show installed versions
+        run: pip list | grep -iE "fastapi|pydantic|starlette|anyio|slowapi"
 
-      - name: Run single health test first
-        run: pytest backend/tests/test_api.py::test_health_returns_ok -v --tb=long --no-header 2>&1; echo "EXIT CODE: $?"
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-
-      - name: Run all backend unit tests
-        run: pytest backend/tests/ -v --tb=long --no-header
+      - name: Run backend unit tests
+        run: pytest backend/tests/ -v --tb=short
         env:
           PYTHONPATH: ${{ github.workspace }}
 
@@ -92,17 +58,7 @@ jobs:
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-training-${{ runner.os }}-3.11-${{ hashFiles('training/requirements.txt') }}
-          restore-keys: pip-training-${{ runner.os }}-3.11-
-
-      - name: Clear pip cache
-        run: pip cache purge || true
+          python-version: "3.11"
 
       - name: Install training dependencies
         run: |
@@ -114,15 +70,15 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
 
-      - name: Print results table
+      - name: Print results
         run: |
           if [ -f models/results.json ]; then
             echo "=== Model Results ==="
-            cat models/results.json
+            python -m json.tool models/results.json
           fi
           ls -lh models/ 2>/dev/null || true
 
-      - name: Upload trained model artifacts
+      - name: Upload model artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -140,9 +96,9 @@ jobs:
 
       - name: Verify frontend files exist
         run: |
-          test -f frontend/index.html   && echo "✓ frontend/index.html"
-          test -f frontend/css/main.css && echo "✓ frontend/css/main.css"
-          test -f frontend/js/app.js    && echo "✓ frontend/js/app.js"
+          test -f frontend/index.html   && echo "OK frontend/index.html"
+          test -f frontend/css/main.css && echo "OK frontend/css/main.css"
+          test -f frontend/js/app.js    && echo "OK frontend/js/app.js"
 
       - name: Validate HTML structure
         run: |
@@ -154,5 +110,5 @@ jobs:
           assert '</html>' in content, 'Missing closing html tag'
           assert 'app.js' in content, 'Missing app.js reference'
           assert 'main.css' in content, 'Missing main.css reference'
-          print('✓ HTML validation passed')
+          print('HTML validation passed')
           "
