@@ -74,9 +74,19 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
 
       - name: Run backend unit tests
-        run: pytest backend/tests/ -v --tb=long 2>&1 || (echo "--- TESTS FAILED ---" && pytest backend/tests/ -v --tb=long 2>&1 | tail -50 && exit 1)
+        run: |
+          pytest backend/tests/ -v --tb=long 2>&1 | tee test-output.txt
+          exit ${PIPESTATUS[0]}
         env:
           PYTHONPATH: ${{ github.workspace }}
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.txt
+          retention-days: 5
 
   test-training:
     name: Training Pipeline (smoke test)
