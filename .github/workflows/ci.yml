@@ -45,6 +45,9 @@ jobs:
           key: pip-backend-${{ runner.os }}-3.11-${{ hashFiles('backend/requirements.txt') }}
           restore-keys: pip-backend-${{ runner.os }}-3.11-
 
+      - name: Clear pip cache
+        run: pip cache purge || true
+
       - name: Install backend dependencies
         run: |
           pip install --upgrade pip
@@ -73,6 +76,9 @@ jobs:
           path: ~/.cache/pip
           key: pip-training-${{ runner.os }}-3.11-${{ hashFiles('training/requirements.txt') }}
           restore-keys: pip-training-${{ runner.os }}-3.11-
+
+      - name: Clear pip cache
+        run: pip cache purge || true
 
       - name: Install training dependencies
         run: |
