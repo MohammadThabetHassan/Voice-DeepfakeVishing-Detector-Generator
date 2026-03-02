@@ -1104,14 +1104,26 @@ async function loadResults() {
     './models/results.json',
     '../models/results.json',
     '/Voice-Deepfake-Vishing-Detector-Generator/models/results.json',
+    'https://mohammadthabethassan.github.io/Voice-DeepfakeVishing-Detector-Generator/models/results.json',
   ];
 
   let data = null;
+  let lastError = null;
   for (const p of paths) {
     try {
       const r = await fetch(p);
-      if (r.ok) { data = await r.json(); break; }
-    } catch (_) { /* try next */ }
+      if (r.ok) { 
+        data = await r.json(); 
+        console.log('Results loaded from:', p);
+        break; 
+      }
+    } catch (e) { 
+      lastError = e;
+      console.log('Failed to load from:', p, e.message);
+    }
+  }
+  if (!data && lastError) {
+    console.error('All paths failed to load results.json');
   }
 
   loading.style.display = 'none';
