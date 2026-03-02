@@ -35,8 +35,6 @@ For IndexTTS2 voice cloning (optional, requires PyTorch + ~4 GB VRAM or CPU):
   export INDEXTTS_DIR=/opt/index-tts
 """
 
-from __future__ import annotations
-
 import base64
 import logging
 import os
@@ -45,7 +43,7 @@ import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
