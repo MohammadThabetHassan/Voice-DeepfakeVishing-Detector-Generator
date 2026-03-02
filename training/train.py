@@ -806,17 +806,31 @@ def evaluate_model(clf, X, y, cv_folds: int = 5):
     }
 
 
+def evaluate_on_test_set(clf, X_test, y_test):
+    """Evaluate trained classifier on held-out test set."""
+    y_pred = clf.predict(X_test)
+
+    return {
+        "accuracy": round(accuracy_score(y_test, y_pred), 4),
+        "precision": round(precision_score(y_test, y_pred, pos_label="fake", zero_division=0), 4),
+        "recall": round(recall_score(y_test, y_pred, pos_label="fake", zero_division=0), 4),
+        "f1": round(f1_score(y_test, y_pred, pos_label="fake", zero_division=0), 4),
+        "confusion_matrix": confusion_matrix(y_test, y_pred).tolist(),
+    }
+
+
 def train_single(
-    df: pd.DataFrame,
+    df_train: pd.DataFrame,
     feature_type: str,
     output_dir: Path,
     classifier_type: str = "gradient_boosting",
+    df_test: pd.DataFrame = None,
 ):
-    """Train one model variant on df. Returns (metrics_dict, model_path)."""
+    """Train one model variant on df_train, evaluate on df_test. Returns (metrics_dict, model_path)."""
     # Identify feature columns
-    feat_cols = [c for c in df.columns if c not in ("label", "_extraction_time")]
-    X = df[feat_cols].values
-    y = df["label"].values  # "real" or "fake"
+    feat_cols = [c for c in df_train.columns if c not in ("label", "_extraction_time")]
+    X_train = df_train[feat_cols].values
+    y_train = df_train["label"].values  # "real" or "fake"
 
     # Validate classifier type
     if classifier_type not in ("gradient_boosting", "xgboost"):
@@ -828,13 +842,18 @@ def train_single(
         return None, None
 
     clf_name = "GBM" if classifier_type == "gradient_boosting" else "XGB"
-    print(f"\n  [{feature_type.upper()} + {clf_name}] Samples: {len(df)} | Features: {X.shape[1]}")
-    print(f"  Label distribution: {pd.Series(y).value_counts().to_dict()}")
+    print(
+        f"\n  [{feature_type.upper()} + {clf_name}] Train samples: {len(df_train)} | Features: {X_train.shape[1]}"
+    )
+    print(f"  Train label distribution: {pd.Series(y_train).value_counts().to_dict()}")
+
+    if df_test is not None:
+        print(f"  Test samples: {len(df_test)}")
 
     # Measure feature extraction time if available
     avg_extract_ms = None
-    if "_extraction_time" in df.columns:
-        avg_extract_ms = round(df["_extraction_time"].mean() * 1000, 3)
+    if "_extraction_time" in df_train.columns:
+        avg_extract_ms = round(df_train["_extraction_time"].mean() * 1000, 3)
 
     # Build classifier based on type
     if classifier_type == "xgboost":
@@ -842,22 +861,47 @@ def train_single(
     else:
         clf = build_classifier()
 
-    # Measure inference time on held-out slice
+    # Cross-validation on training set
     t0 = time.perf_counter()
-    metrics = evaluate_model(clf, X, y)
+    cv_metrics = evaluate_model(clf, X_train, y_train)
     cv_time = time.perf_counter() - t0
 
-    # Train final model on all data
-    clf.fit(X, y)
+    # Train final model on all training data
+    clf.fit(X_train, y_train)
+
+    # Evaluate on test set if provided
+    if df_test is not None:
+        X_test = df_test[feat_cols].values
+        y_test = df_test["label"].values
+        test_metrics = evaluate_on_test_set(clf, X_test, y_test)
+        print(f"  Test F1={test_metrics['f1']:.4f}  Test Acc={test_metrics['accuracy']:.4f}")
+    else:
+        test_metrics = None
 
     # Inference benchmark (1000 single-sample predictions)
-    bench_feats = X[:1]
+    bench_feats = X_train[:1]
     bench_start = time.perf_counter()
     for _ in range(1000):
         clf.predict(bench_feats)
     bench_ms = round((time.perf_counter() - bench_start), 3)
 
-    metrics["cv_time_s"] = round(cv_time, 2)
+    # Combine metrics
+    metrics = {
+        "cv_accuracy": cv_metrics["accuracy"],
+        "cv_precision": cv_metrics["precision"],
+        "cv_recall": cv_metrics["recall"],
+        "cv_f1": cv_metrics["f1"],
+        "cv_confusion_matrix": cv_metrics["confusion_matrix"],
+        "cv_time_s": round(cv_time, 2),
+    }
+
+    if test_metrics:
+        metrics["test_accuracy"] = test_metrics["accuracy"]
+        metrics["test_precision"] = test_metrics["precision"]
+        metrics["test_recall"] = test_metrics["recall"]
+        metrics["test_f1"] = test_metrics["f1"]
+        metrics["test_confusion_matrix"] = test_metrics["confusion_matrix"]
+
     metrics["inference_1k_ms"] = round(bench_ms * 1000, 1)
     if avg_extract_ms:
         metrics["avg_feature_extraction_ms"] = avg_extract_ms
@@ -876,7 +920,7 @@ def train_single(
     }
     joblib.dump(model_obj, model_path)
     print(f"  Saved: {model_path}")
-    print(f"  F1={metrics['f1']:.4f}  Acc={metrics['accuracy']:.4f}")
+    print(f"  CV F1={metrics['cv_f1']:.4f}  CV Acc={metrics['cv_accuracy']:.4f}")
 
     return metrics, model_path
 
@@ -907,28 +951,41 @@ def main():
 
     all_results = {}
 
-    def train_both_classifiers(df: pd.DataFrame, ft: str, output_dir: Path):
-        """Train both GBM and XGBoost variants, return results dict and best path."""
+    def train_both_classifiers(df: pd.DataFrame, ft: str, output_dir: Path, test_size: float = 0.2):
+        """Train both GBM and XGBoost variants with train/test split, return results dict and best path."""
+        from sklearn.model_selection import train_test_split
+
         results = {}
         best_local_f1 = -1
         best_local_path = None
 
+        # Split data into train/test (80/20 stratified)
+        df_train, df_test = train_test_split(
+            df, test_size=test_size, random_state=42, stratify=df["label"]
+        )
+        print(f"\n  [Data Split] Train: {len(df_train)} | Test: {len(df_test)}")
+
         # Train Gradient Boosting (GBM)
         metrics_gbm, path_gbm = train_single(
-            df, ft, output_dir, classifier_type="gradient_boosting"
+            df_train, ft, output_dir, classifier_type="gradient_boosting", df_test=df_test
         )
         if metrics_gbm:
             results[f"{ft}_gbm"] = metrics_gbm
-            if metrics_gbm["f1"] > best_local_f1:
-                best_local_f1 = metrics_gbm["f1"]
+            # Use test F1 if available, otherwise CV F1
+            f1_score = metrics_gbm.get("test_f1", metrics_gbm.get("cv_f1", 0))
+            if f1_score > best_local_f1:
+                best_local_f1 = f1_score
                 best_local_path = path_gbm
 
         # Train XGBoost
-        metrics_xgb, path_xgb = train_single(df, ft, output_dir, classifier_type="xgboost")
+        metrics_xgb, path_xgb = train_single(
+            df_train, ft, output_dir, classifier_type="xgboost", df_test=df_test
+        )
         if metrics_xgb:
             results[f"{ft}_xgboost"] = metrics_xgb
-            if metrics_xgb["f1"] > best_local_f1:
-                best_local_f1 = metrics_xgb["f1"]
+            f1_score = metrics_xgb.get("test_f1", metrics_xgb.get("cv_f1", 0))
+            if f1_score > best_local_f1:
+                best_local_f1 = f1_score
                 best_local_path = path_xgb
 
         return results, best_local_path, best_local_f1
