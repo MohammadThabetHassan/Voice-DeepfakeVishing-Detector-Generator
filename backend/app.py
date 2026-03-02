@@ -1352,7 +1352,7 @@ async def detect(
 
 @app.post("/batch-detect")
 @limiter.limit(RATE_LIMIT_BATCH_DETECT)
-async def batch_detect(request: Request, audio: List[UploadFile] = File(...)):
+async def batch_detect(request: Request, audio=File(...)):
     """
     Classify multiple audio files as real or deepfake.
 

@@ -791,30 +791,32 @@ def train_ensemble(
     return ensemble_obj, model_path
 
 
-def evaluate_model(clf, X, y, cv_folds: int = 5):
+def evaluate_model(clf, X, y, cv_folds: int = 5, pos_label="fake"):
     """Run stratified k-fold CV and return metrics dict."""
     cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
     y_pred = cross_val_predict(clf, X, y, cv=cv)
 
     return {
         "accuracy": round(accuracy_score(y, y_pred), 4),
-        "precision": round(precision_score(y, y_pred, pos_label="fake", zero_division=0), 4),
-        "recall": round(recall_score(y, y_pred, pos_label="fake", zero_division=0), 4),
-        "f1": round(f1_score(y, y_pred, pos_label="fake", zero_division=0), 4),
+        "precision": round(precision_score(y, y_pred, pos_label=pos_label, zero_division=0), 4),
+        "recall": round(recall_score(y, y_pred, pos_label=pos_label, zero_division=0), 4),
+        "f1": round(f1_score(y, y_pred, pos_label=pos_label, zero_division=0), 4),
         "confusion_matrix": confusion_matrix(y, y_pred).tolist(),
         "report": classification_report(y, y_pred, zero_division=0),
     }
 
 
-def evaluate_on_test_set(clf, X_test, y_test):
+def evaluate_on_test_set(clf, X_test, y_test, pos_label="fake"):
     """Evaluate trained classifier on held-out test set."""
     y_pred = clf.predict(X_test)
 
     return {
         "accuracy": round(accuracy_score(y_test, y_pred), 4),
-        "precision": round(precision_score(y_test, y_pred, pos_label="fake", zero_division=0), 4),
-        "recall": round(recall_score(y_test, y_pred, pos_label="fake", zero_division=0), 4),
-        "f1": round(f1_score(y_test, y_pred, pos_label="fake", zero_division=0), 4),
+        "precision": round(
+            precision_score(y_test, y_pred, pos_label=pos_label, zero_division=0), 4
+        ),
+        "recall": round(recall_score(y_test, y_pred, pos_label=pos_label, zero_division=0), 4),
+        "f1": round(f1_score(y_test, y_pred, pos_label=pos_label, zero_division=0), 4),
         "confusion_matrix": confusion_matrix(y_test, y_pred).tolist(),
     }
 
@@ -862,13 +864,15 @@ def train_single(
         # Encode: 'fake' -> 1, 'real' -> 0
         label_map = {"real": 0, "fake": 1}
         y_train_encoded = np.array([label_map.get(label, label) for label in y_train])
+        pos_label = 1  # Use numeric pos_label for XGBoost
     else:
         clf = build_classifier()
         y_train_encoded = y_train
+        pos_label = "fake"  # Use string pos_label for GradientBoosting
 
     # Cross-validation on training set
     t0 = time.perf_counter()
-    cv_metrics = evaluate_model(clf, X_train, y_train_encoded)
+    cv_metrics = evaluate_model(clf, X_train, y_train_encoded, pos_label=pos_label)
     cv_time = time.perf_counter() - t0
 
     # Train final model on all training data
@@ -881,9 +885,9 @@ def train_single(
         # Encode test labels for XGBoost
         if classifier_type == "xgboost":
             y_test_encoded = np.array([label_map.get(label, label) for label in y_test])
-            test_metrics = evaluate_on_test_set(clf, X_test, y_test_encoded)
+            test_metrics = evaluate_on_test_set(clf, X_test, y_test_encoded, pos_label=pos_label)
         else:
-            test_metrics = evaluate_on_test_set(clf, X_test, y_test)
+            test_metrics = evaluate_on_test_set(clf, X_test, y_test, pos_label=pos_label)
         print(f"  Test F1={test_metrics['f1']:.4f}  Test Acc={test_metrics['accuracy']:.4f}")
     else:
         test_metrics = None
