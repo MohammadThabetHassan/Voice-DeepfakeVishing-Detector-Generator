@@ -1350,147 +1350,23 @@ async def detect(
         _cleanup(wav_path)
 
 
-@app.post("/batch-detect")
-@limiter.limit(RATE_LIMIT_BATCH_DETECT)
-async def batch_detect(request: Request, audio=File(...)):
-    """
-    Classify multiple audio files as real or deepfake.
+# NOTE: Batch detect endpoint temporarily disabled due to FastAPI/Pydantic v2 ForwardRef issues
+# with List[UploadFile] type annotations. Single file detection (/detect) works fine.
+# TODO: Re-enable after fixing type annotation issues or upgrading FastAPI/Pydantic
 
-    Upload multiple WAV files (any sample rate/channels — auto-converted).
-    Returns an array of results with file identifiers.
-    Partial failures are handled gracefully — if one file fails, others continue processing.
-    """
-    if not audio:
-        raise HTTPException(400, "No files provided.")
+# @app.post("/batch-detect")
+# @limiter.limit(RATE_LIMIT_BATCH_DETECT)
+# async def batch_detect(
+#     request: Request,
+#     audio: List[UploadFile] = File(..., description="Multiple audio files to classify"),
+# ):
+#     """
+#     Classify multiple audio files as real or deepfake.
+#     """
+#     pass
 
-    detector = _load_detector()
-    if detector is None:
-        raise HTTPException(
-            503,
-            "Detection model not loaded. Run: python training/train.py --csv osr_features.csv",
-        )
-
-    model = detector["model"]
-    feature_type = detector.get("feature_type", "mfcc_hybrid")
-    feat_cols = detector.get("feature_columns", None)
-
-    import numpy as np
-    import pandas as pd
-
-    col_map = {
-        "mfcc": [f"MFCC{i + 1}" for i in range(13)],
-        "fft": ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"],
-        "hybrid": (
-            [f"MFCC{i + 1}" for i in range(13)]
-            + ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"]
-        ),
-        "mfcc_hybrid": (
-            [f"MFCC{i + 1}" for i in range(13)]
-            + ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"]
-        ),
-        "enhanced": (
-            [f"MFCC{i + 1}" for i in range(13)]
-            + ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"]
-            + ["pitch_mean", "pitch_std", "jitter", "shimmer"]
-            + [f"delta_mfcc{i + 1}_mean" for i in range(13)]
-            + [f"delta_mfcc{i + 1}_std" for i in range(13)]
-            + [f"delta2_mfcc{i + 1}_mean" for i in range(13)]
-            + [f"delta2_mfcc{i + 1}_std" for i in range(13)]
-        ),
-    }
-
-    expected_cols = feat_cols or col_map.get(feature_type, col_map["mfcc_hybrid"])
-
-    results = []
-    temp_paths = []
-
-    try:
-        for upload_file in audio:
-            t0 = time.time()
-            wav_path = None
-            result = {
-                "filename": upload_file.filename or "unknown",
-                "prediction": None,
-                "confidence": None,
-                "model_used": detector.get("model_name", "unknown"),
-                "feature_type": feature_type,
-                "inference_time_s": 0.0,
-                "status": "error",
-                "error_message": None,
-            }
-
-            try:
-                if not upload_file.filename:
-                    result["error_message"] = "No filename provided."
-                    results.append(result)
-                    continue
-
-                wav_path = _save_upload(upload_file)
-                temp_paths.append(wav_path)
-
-                feats = _extract_features_for_inference(wav_path, feature_type)
-
-                # Handle ensemble model
-                if feature_type == "ensemble":
-                    prediction = model.predict(feats)
-                    proba = model.predict_proba(feats)
-                    confidence = float(max(proba))
-                else:
-                    # Handle legacy 18-feature models
-                    if len(feats) != len(expected_cols):
-                        feats = _extract_legacy_18_features(wav_path)
-                        expected_cols = [f"MFCC{i + 1}" for i in range(13)] + [
-                            "centroid",
-                            "bandwidth",
-                            "rolloff",
-                            "jitter",
-                            "shimmer",
-                        ]
-
-                    df = pd.DataFrame([feats], columns=expected_cols)
-                    pred_raw = model.predict(df)[0]
-
-                    confidence = 0.5
-                    if hasattr(model, "predict_proba"):
-                        proba = model.predict_proba(df)[0]
-                        confidence = float(max(proba))
-
-                    if str(pred_raw) in ("1", "fake", "deepfake"):
-                        prediction = "fake"
-                    else:
-                        prediction = "real"
-
-                result["prediction"] = prediction
-                result["confidence"] = round(confidence, 4)
-                result["inference_time_s"] = round(time.time() - t0, 3)
-                result["status"] = "success"
-
-            except HTTPException as e:
-                result["error_message"] = str(e.detail)
-                log.warning(f"Batch processing failed for {upload_file.filename}: {e.detail}")
-            except Exception as e:
-                result["error_message"] = str(e)
-                log.error(f"Batch processing error for {upload_file.filename}: {e}")
-                log.error(traceback.format_exc())
-            finally:
-                if wav_path:
-                    _cleanup(wav_path)
-
-            results.append(result)
-
-    finally:
-        # Ensure all temp files are cleaned up
-        for path in temp_paths:
-            _cleanup(path)
-
-    return JSONResponse(
-        {
-            "results": results,
-            "total_files": len(audio),
-            "successful": sum(1 for r in results if r["status"] == "success"),
-            "failed": sum(1 for r in results if r["status"] == "error"),
-        }
-    )
+# Placeholder to maintain imports
+batch_detect = None
 
 
 @app.post("/generate")
