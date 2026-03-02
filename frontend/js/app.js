@@ -1146,6 +1146,53 @@ async function loadResults() {
   });
 
   tableWrap.classList.remove('hidden');
+
+  // Render confusion matrices
+  const cmContainer = $('#confusion-matrices-container');
+  const cmGrid = $('#confusion-grid');
+  if (cmContainer && cmGrid) {
+    cmGrid.innerHTML = '';
+    Object.entries(data).forEach(([ft, m]) => {
+      if (!m.confusion_matrix) return;
+      const isBest = m.f1 === bestF1;
+      const cm = m.confusion_matrix;
+      // cm format: [[TN, FP], [FN, TP]]
+      const [[tn, fp], [fn, tp]] = cm;
+
+      const div = document.createElement('div');
+      div.className = 'confusion-matrix';
+      div.innerHTML = `
+        <h4>${ft.toUpperCase()}${isBest ? ' <span class="best-badge">⭐ Best</span>' : ''}</h4>
+        <table class="confusion-table" role="table" aria-label="Confusion matrix for ${ft} model">
+          <thead>
+            <tr>
+              <th></th>
+              <th scope="col">Predicted Real</th>
+              <th scope="col">Predicted Fake</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row" class="label-cell">Actual Real</th>
+              <td class="tn" title="True Negative">${tn}</td>
+              <td class="fp" title="False Positive">${fp}</td>
+            </tr>
+            <tr>
+              <th scope="row" class="label-cell">Actual Fake</th>
+              <td class="fn" title="False Negative">${fn}</td>
+              <td class="tp" title="True Positive">${tp}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="confusion-legend">
+          <span><span class="dot correct"></span> Correct</span>
+          <span><span class="dot incorrect"></span> Incorrect</span>
+        </div>
+      `;
+      cmGrid.appendChild(div);
+    });
+    cmContainer.classList.remove('hidden');
+  }
 }
 
 // Load results when tab activated or on page load

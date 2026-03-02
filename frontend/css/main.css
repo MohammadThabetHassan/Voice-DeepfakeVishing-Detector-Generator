@@ -757,6 +757,114 @@ footer {
   white-space: nowrap;
 }
 
+/* ── CONFUSION MATRIX ───────────────────────── */
+.confusion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.confusion-matrix {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.confusion-matrix h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1rem;
+  color: var(--text);
+  text-align: center;
+}
+
+.confusion-matrix h4 .best-badge {
+  color: var(--brand-green);
+  font-size: 0.85rem;
+}
+
+.confusion-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.confusion-table th,
+.confusion-table td {
+  padding: 0.6rem;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+
+.confusion-table th {
+  background: var(--surface-alt);
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.confusion-table .label-cell {
+  background: var(--surface-alt);
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.confusion-table .tp {
+  background: rgba(22, 163, 74, 0.15);
+  color: var(--brand-green);
+  font-weight: 600;
+}
+
+.confusion-table .tn {
+  background: rgba(22, 163, 74, 0.15);
+  color: var(--brand-green);
+  font-weight: 600;
+}
+
+.confusion-table .fp {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--brand-red);
+  font-weight: 600;
+}
+
+.confusion-table .fn {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--brand-red);
+  font-weight: 600;
+}
+
+.confusion-legend {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.confusion-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.confusion-legend .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.confusion-legend .dot.correct {
+  background: rgba(22, 163, 74, 0.3);
+}
+
+.confusion-legend .dot.incorrect {
+  background: rgba(220, 38, 38, 0.3);
+}
+
 /* ── RESPONSIVE ─────────────────────────────── */
 @media (max-width: 600px) {
   header h1 { font-size: 1.1rem; }
@@ -766,4 +874,5 @@ footer {
   .modal-box { padding: 1.2rem; }
   .history-item { flex-wrap: wrap; }
   .history-filename { width: 100%; order: -1; }
+  .confusion-grid { grid-template-columns: 1fr; }
 }
