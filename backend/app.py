@@ -1348,25 +1348,6 @@ async def detect(
         _cleanup(wav_path)
 
 
-# NOTE: Batch detect endpoint temporarily disabled due to FastAPI/Pydantic v2 ForwardRef issues
-# with List[UploadFile] type annotations. Single file detection (/detect) works fine.
-# TODO: Re-enable after fixing type annotation issues or upgrading FastAPI/Pydantic
-
-# @app.post("/batch-detect")
-# @limiter.limit(RATE_LIMIT_BATCH_DETECT)
-# async def batch_detect(
-#     request: Request,
-#     audio: List[UploadFile] = File(..., description="Multiple audio files to classify"),
-# ):
-#     """
-#     Classify multiple audio files as real or deepfake.
-#     """
-#     pass
-
-# Placeholder to maintain imports
-batch_detect = None
-
-
 @app.post("/generate")
 @limiter.limit(RATE_LIMIT_GENERATE)
 async def generate(
