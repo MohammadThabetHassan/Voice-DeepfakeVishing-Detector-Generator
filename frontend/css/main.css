@@ -845,6 +845,25 @@ footer {
   font-weight: 600;
 }
 
+.confusion-table td.heat-cell {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.confusion-table td .cm-count {
+  display: block;
+  font-size: .95rem;
+  line-height: 1.1;
+}
+
+.confusion-table td .cm-rate {
+  display: block;
+  font-size: .72rem;
+  line-height: 1.1;
+  color: var(--text-muted);
+  margin-top: .15rem;
+}
+
 .confusion-legend {
   display: flex;
   justify-content: center;
@@ -872,6 +891,22 @@ footer {
 
 .confusion-legend .dot.incorrect {
   background: rgba(220, 38, 38, 0.3);
+}
+
+.heat-scale {
+  margin-top: .55rem;
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  font-size: .72rem;
+  color: var(--text-muted);
+}
+
+.heat-scale-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(22, 163, 74, 0.15), rgba(22, 163, 74, 0.85));
 }
 
 /* ── RESPONSIVE ─────────────────────────────── */

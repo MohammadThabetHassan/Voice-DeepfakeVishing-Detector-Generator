@@ -46,6 +46,7 @@ A graduation-quality research project that:
 ### Frontend
 - **Browser Recording** — Record audio directly in the browser
 - **Waveform Visualization** — Visual audio preview with waveform display
+- **Confusion Matrix Heatmap** — Count + per-row percentage intensity in Results tab
 - **Dark Mode** — Toggle between light and dark themes
 - **Detection History** — Local storage of recent detection results
 
@@ -269,6 +270,15 @@ python training/train.py --csv osr_features.csv --output models/ --cv-folds 5
 
 # Adjust segment duration (default 1 second)
 python training/train.py --data training/data/ --seg-duration 2.0
+
+# Speaker-disjoint split (default ON for WAV-directory training)
+python training/train.py --data training/data/ --output models/ --speaker-disjoint
+
+# Evaluate on out-of-domain benchmark set (tracks ood_* + ood_by_source metrics)
+python training/train.py \
+  --data training/data/ \
+  --ood-data training/benchmark_ood/ \
+  --output models/
 ```
 
 ---

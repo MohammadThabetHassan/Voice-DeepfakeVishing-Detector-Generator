@@ -1168,12 +1168,32 @@ async function loadResults() {
     return;
   }
 
-  const FEATURE_DIMS = { mfcc: 13, fft: 6, hybrid: 19, mfcc_legacy: 18, unknown: '?' };
+  const FEATURE_DIMS = {
+    mfcc: 13,
+    fft: 6,
+    hybrid: 19,
+    enhanced: 75,
+    mfcc_legacy: 18,
+    ensemble: 'Varies',
+    unknown: '?'
+  };
+  const inferBaseFeatureType = (modelKey) => {
+    const k = String(modelKey || '').toLowerCase();
+    if (k.startsWith('mfcc_legacy')) return 'mfcc_legacy';
+    if (k.startsWith('mfcc')) return 'mfcc';
+    if (k.startsWith('fft')) return 'fft';
+    if (k.startsWith('hybrid') || k.startsWith('mfcc_hybrid')) return 'hybrid';
+    if (k.startsWith('enhanced')) return 'enhanced';
+    if (k.startsWith('ensemble')) return 'ensemble';
+    return 'unknown';
+  };
   let bestF1 = -1;
   Object.values(data).forEach(m => { if (m.f1 > bestF1) bestF1 = m.f1; });
 
   tbody.innerHTML = '';
   Object.entries(data).forEach(([ft, m]) => {
+    const baseFt = inferBaseFeatureType(ft);
+    const dims = FEATURE_DIMS[baseFt] ?? '?';
     const isBest = m.f1 === bestF1;
     const badge = (v, good = .85, warn = .70) =>
       `<span class="metric-badge ${v >= good ? 'badge-green' : v >= warn ? 'badge-yellow' : 'badge-red'}">${(v*100).toFixed(1)}%</span>`;
@@ -1182,7 +1202,7 @@ async function loadResults() {
     if (isBest) tr.classList.add('best-row');
     tr.innerHTML = `
       <td>${isBest ? '⭐ ' : ''}${ft.toUpperCase()}</td>
-      <td>${FEATURE_DIMS[ft] || '?'}</td>
+      <td>${dims}</td>
       <td>${badge(m.accuracy)}</td>
       <td>${badge(m.precision)}</td>
       <td>${badge(m.recall)}</td>
@@ -1205,6 +1225,21 @@ async function loadResults() {
       const cm = m.confusion_matrix;
       // cm format: [[TN, FP], [FN, TP]]
       const [[tn, fp], [fn, tp]] = cm;
+      const maxCell = Math.max(tn, fp, fn, tp, 1);
+      const realTotal = Math.max(1, tn + fp);
+      const fakeTotal = Math.max(1, fn + tp);
+      const pct = (value, total) => `${((value / total) * 100).toFixed(1)}%`;
+      const cellBg = (value, correct) => {
+        const intensity = 0.12 + 0.78 * (value / maxCell);
+        const rgb = correct ? '22,163,74' : '220,38,38';
+        return `rgba(${rgb}, ${Math.min(0.9, intensity).toFixed(3)})`;
+      };
+      const cell = (klass, title, value, total, correct) => `
+        <td class="${klass} heat-cell" title="${title}" style="background:${cellBg(value, correct)}">
+          <span class="cm-count">${value}</span>
+          <span class="cm-rate">${pct(value, total)}</span>
+        </td>
+      `;
 
       const div = document.createElement('div');
       div.className = 'confusion-matrix';
@@ -1221,19 +1256,24 @@ async function loadResults() {
           <tbody>
             <tr>
               <th scope="row" class="label-cell">Actual Real</th>
-              <td class="tn" title="True Negative">${tn}</td>
-              <td class="fp" title="False Positive">${fp}</td>
+              ${cell('tn', 'True Negative', tn, realTotal, true)}
+              ${cell('fp', 'False Positive', fp, realTotal, false)}
             </tr>
             <tr>
               <th scope="row" class="label-cell">Actual Fake</th>
-              <td class="fn" title="False Negative">${fn}</td>
-              <td class="tp" title="True Positive">${tp}</td>
+              ${cell('fn', 'False Negative', fn, fakeTotal, false)}
+              ${cell('tp', 'True Positive', tp, fakeTotal, true)}
             </tr>
           </tbody>
         </table>
         <div class="confusion-legend">
           <span><span class="dot correct"></span> Correct</span>
           <span><span class="dot incorrect"></span> Incorrect</span>
+        </div>
+        <div class="heat-scale">
+          <span>Low</span>
+          <span class="heat-scale-bar"></span>
+          <span>High</span>
         </div>
       `;
       cmGrid.appendChild(div);

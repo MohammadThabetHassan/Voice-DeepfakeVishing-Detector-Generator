@@ -33,6 +33,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import warnings
@@ -55,6 +56,7 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -77,6 +79,14 @@ THRESHOLD_PROFILES = {
     "balanced": {"threshold": 0.8, "uncertain_margin": 0.08},
     "low_fp": {"threshold": 0.85, "uncertain_margin": 0.06},
     "high_recall": {"threshold": 0.7, "uncertain_margin": 0.1},
+}
+
+NON_FEATURE_COLUMNS = {
+    "label",
+    "_extraction_time",
+    "_source_file",
+    "_speaker_id",
+    "_source_domain",
 }
 
 
@@ -113,6 +123,130 @@ def hash_wav_directory_manifest(data_dir: Path) -> str:
                 tail = f.read(65536)
                 h.update(tail)
     return h.hexdigest()
+
+
+def infer_source_domain(wav_path: Path, label: str, data_dir: Path) -> str:
+    """Infer source domain (dataset/source bucket) from path and filename."""
+    try:
+        rel = wav_path.relative_to(data_dir)
+        parts = rel.parts
+        if len(parts) >= 3 and parts[0] == label:
+            return parts[1].lower()
+    except Exception:
+        pass
+
+    stem = wav_path.stem.lower()
+    if "youtube" in stem or stem.startswith("yt"):
+        return "youtube"
+    if "podcast" in stem or "_pod_" in stem:
+        return "podcast"
+    if stem.startswith("osr"):
+        return "osr"
+    return "default"
+
+
+def infer_speaker_id(wav_path: Path, label: str, data_dir: Path) -> str:
+    """
+    Infer a stable speaker id from folder/file naming.
+    Falls back to filename stem if no clearer grouping is available.
+    """
+    try:
+        rel = wav_path.relative_to(data_dir)
+        parts = rel.parts
+        # data/<label>/<speaker_or_domain>/<file>.wav
+        if len(parts) >= 3 and parts[0] == label and parts[-2] != label:
+            parent = parts[-2].strip().lower()
+            if parent and parent not in ("real", "fake"):
+                return parent
+    except Exception:
+        pass
+
+    stem = wav_path.stem.lower()
+    # Common dataset pattern: osr_us_000_0030_8k -> speaker "osr_us_000"
+    m_osr = re.match(r"^(osr_[a-z]{2}_[0-9]{3})_", stem)
+    if m_osr:
+        return m_osr.group(1)
+
+    # Generic speaker id tokens like speaker12 / spk_01 / id-004
+    m = re.search(r"(?:spk|speaker|voice|id)[_-]?([a-z0-9]{1,8})", stem)
+    if m:
+        return f"spk_{m.group(1)}"
+
+    tokens = [t for t in re.split(r"[_\-\s]+", stem) if t]
+    if len(tokens) >= 3 and tokens[2].isdigit():
+        return "_".join(tokens[:3])
+    if len(tokens) >= 2:
+        return "_".join(tokens[:2])
+    return stem or "unknown_speaker"
+
+
+def split_train_test(
+    df: pd.DataFrame,
+    test_size: float = 0.2,
+    random_state: int = 42,
+    speaker_disjoint: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """Return train/test split and split mode string."""
+    from sklearn.model_selection import train_test_split
+
+    if speaker_disjoint and "_speaker_id" in df.columns:
+        groups = df["_speaker_id"].astype(str).fillna("unknown")
+        unique_groups = groups.nunique()
+        if unique_groups >= 2:
+            gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
+            train_idx, test_idx = next(gss.split(df, y=df["label"], groups=groups))
+            df_train = df.iloc[train_idx].copy()
+            df_test = df.iloc[test_idx].copy()
+            if (
+                len(set(df_train["label"])) >= 2
+                and len(set(df_test["label"])) >= 2
+                and df_train["_speaker_id"].nunique() >= 1
+                and df_test["_speaker_id"].nunique() >= 1
+            ):
+                overlap = set(df_train["_speaker_id"]).intersection(set(df_test["_speaker_id"]))
+                if len(overlap) == 0:
+                    return df_train, df_test, "speaker_disjoint"
+
+    df_train, df_test = train_test_split(
+        df, test_size=test_size, random_state=random_state, stratify=df["label"]
+    )
+    return df_train.copy(), df_test.copy(), "stratified"
+
+
+def evaluate_with_source_breakdown(
+    clf,
+    df_eval: pd.DataFrame,
+    feat_cols: list[str],
+    classifier_type: str,
+    pos_label,
+):
+    """Evaluate on external/benchmark dataframe and return global + per-source metrics."""
+    X_eval = df_eval[feat_cols].values
+    y_eval = df_eval["label"].values
+    if classifier_type == "xgboost":
+        label_map = {"real": 0, "fake": 1}
+        y_eval_encoded = np.array([label_map.get(label, label) for label in y_eval])
+        global_metrics = evaluate_on_test_set(clf, X_eval, y_eval_encoded, pos_label=pos_label)
+    else:
+        global_metrics = evaluate_on_test_set(clf, X_eval, y_eval, pos_label=pos_label)
+
+    source_metrics = {}
+    if "_source_domain" in df_eval.columns:
+        for source, df_src in df_eval.groupby("_source_domain"):
+            if len(df_src) < 2:
+                continue
+            X_src = df_src[feat_cols].values
+            y_src = df_src["label"].values
+            if classifier_type == "xgboost":
+                label_map = {"real": 0, "fake": 1}
+                y_src_encoded = np.array([label_map.get(label, label) for label in y_src])
+                src_metrics = evaluate_on_test_set(clf, X_src, y_src_encoded, pos_label=pos_label)
+            else:
+                src_metrics = evaluate_on_test_set(clf, X_src, y_src, pos_label=pos_label)
+            src_metrics["samples"] = int(len(df_src))
+            source_metrics[str(source)] = src_metrics
+
+    return global_metrics, source_metrics
 
 
 # ─── feature extraction ───────────────────────────────────────────────────────
@@ -467,7 +601,7 @@ def load_from_directory(data_dir: Path, seg_duration: float = 1.0):
         if not subdir.exists():
             print(f"  [WARN] directory not found: {subdir}")
             continue
-        wavs = list(subdir.glob("*.wav")) + list(subdir.glob("*.WAV"))
+        wavs = list(subdir.rglob("*.wav")) + list(subdir.rglob("*.WAV"))
         print(f"  {label}: {len(wavs)} files")
         for wav_path in wavs:
             try:
@@ -478,6 +612,8 @@ def load_from_directory(data_dir: Path, seg_duration: float = 1.0):
                     if len(audio) >= seg_len
                     else np.pad(audio, (0, seg_len - len(audio)))
                 )
+                speaker_id = infer_speaker_id(wav_path, label=label, data_dir=data_dir)
+                source_domain = infer_source_domain(wav_path, label=label, data_dir=data_dir)
                 for ft, extractor in EXTRACTORS.items():
                     t0 = time.perf_counter()
                     feats = extractor(segment, sr)
@@ -485,6 +621,9 @@ def load_from_directory(data_dir: Path, seg_duration: float = 1.0):
                     row = dict(zip(FEATURE_COLS[ft], feats))
                     row["label"] = label
                     row["_extraction_time"] = elapsed
+                    row["_source_file"] = str(wav_path)
+                    row["_speaker_id"] = speaker_id
+                    row["_source_domain"] = source_domain
                     records[ft].append(row)
             except Exception as e:
                 print(f"  [SKIP] {wav_path.name}: {e}")
@@ -506,8 +645,13 @@ def load_from_csv(csv_path: Path):
     if "label" not in df.columns:
         raise ValueError(f"CSV must have a 'label' column. Got: {df.columns.tolist()}")
 
+    # Ensure expected metadata columns exist for downstream split/evaluation logic.
+    for meta_col in ("_speaker_id", "_source_domain"):
+        if meta_col not in df.columns:
+            df[meta_col] = "unknown"
+
     # Detect feature type
-    cols = set(df.columns) - {"label", "_extraction_time"}
+    cols = set(df.columns) - NON_FEATURE_COLUMNS
     if any(c.startswith("MFCC") for c in cols) and any(
         c in cols for c in ("centroid", "bandwidth")
     ):
@@ -782,7 +926,7 @@ def train_ensemble(
                         feats = row[feat_cols].values if all(c in row for c in feat_cols) else None
                     else:
                         feat_cols_ft = [
-                            c for c in df_ft.columns if c not in ("label", "_extraction_time")
+                            c for c in df_ft.columns if c not in NON_FEATURE_COLUMNS
                         ]
                         feats = (
                             row[feat_cols_ft].values
@@ -857,7 +1001,15 @@ def train_ensemble(
 
 def evaluate_model(clf, X, y, cv_folds: int = 5, pos_label="fake"):
     """Run stratified k-fold CV and return metrics dict."""
-    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+    class_counts = pd.Series(y).value_counts()
+    max_folds = int(class_counts.min()) if not class_counts.empty else 0
+    safe_folds = max(2, min(cv_folds, max_folds))
+    if safe_folds != cv_folds:
+        print(
+            f"  [WARN] Reducing CV folds from {cv_folds} to {safe_folds} "
+            f"(min samples per class: {max_folds})"
+        )
+    cv = StratifiedKFold(n_splits=safe_folds, shuffle=True, random_state=42)
     y_pred = cross_val_predict(clf, X, y, cv=cv)
 
     return {
@@ -891,13 +1043,15 @@ def train_single(
     output_dir: Path,
     classifier_type: str = "gradient_boosting",
     df_test: pd.DataFrame = None,
+    df_ood: pd.DataFrame = None,
+    cv_folds: int = 5,
     training_data_hash: str | None = None,
     training_date_utc: str | None = None,
     training_data_source: str | None = None,
 ):
     """Train one model variant on df_train, evaluate on df_test. Returns (metrics_dict, model_path)."""
     # Identify feature columns
-    feat_cols = [c for c in df_train.columns if c not in ("label", "_extraction_time")]
+    feat_cols = [c for c in df_train.columns if c not in NON_FEATURE_COLUMNS]
     X_train = df_train[feat_cols].values
     y_train = df_train["label"].values  # "real" or "fake"
 
@@ -939,7 +1093,9 @@ def train_single(
 
     # Cross-validation on training set
     t0 = time.perf_counter()
-    cv_metrics = evaluate_model(clf, X_train, y_train_encoded, pos_label=pos_label)
+    cv_metrics = evaluate_model(
+        clf, X_train, y_train_encoded, cv_folds=cv_folds, pos_label=pos_label
+    )
     cv_time = time.perf_counter() - t0
 
     # Train final model on all training data
@@ -958,6 +1114,28 @@ def train_single(
         print(f"  Test F1={test_metrics['f1']:.4f}  Test Acc={test_metrics['accuracy']:.4f}")
     else:
         test_metrics = None
+
+    # Out-of-domain / benchmark evaluation (optional)
+    if df_ood is not None and len(df_ood) > 0:
+        try:
+            ood_global, ood_by_source = evaluate_with_source_breakdown(
+                clf=clf,
+                df_eval=df_ood,
+                feat_cols=feat_cols,
+                classifier_type=classifier_type,
+                pos_label=pos_label,
+            )
+            print(
+                f"  OOD F1={ood_global['f1']:.4f}  OOD Acc={ood_global['accuracy']:.4f} "
+                f"(sources={len(ood_by_source)})"
+            )
+        except Exception as e:
+            print(f"  [WARN] OOD evaluation failed: {e}")
+            ood_global = None
+            ood_by_source = {}
+    else:
+        ood_global = None
+        ood_by_source = {}
 
     # Inference benchmark (1000 single-sample predictions)
     bench_feats = X_train[:1]
@@ -982,6 +1160,15 @@ def train_single(
         metrics["test_recall"] = test_metrics["recall"]
         metrics["test_f1"] = test_metrics["f1"]
         metrics["test_confusion_matrix"] = test_metrics["confusion_matrix"]
+
+    if ood_global:
+        metrics["ood_accuracy"] = ood_global["accuracy"]
+        metrics["ood_precision"] = ood_global["precision"]
+        metrics["ood_recall"] = ood_global["recall"]
+        metrics["ood_f1"] = ood_global["f1"]
+        metrics["ood_confusion_matrix"] = ood_global["confusion_matrix"]
+        metrics["ood_samples"] = int(len(df_ood))
+        metrics["ood_by_source"] = ood_by_source
 
     metrics["inference_1k_ms"] = round(bench_ms * 1000, 1)
     if avg_extract_ms:
@@ -1101,6 +1288,25 @@ def main():
     )
     parser.add_argument("--cv-folds", type=int, default=5, help="Cross-validation folds")
     parser.add_argument("--seg-duration", type=float, default=1.0, help="Segment length in seconds")
+    parser.add_argument(
+        "--ood-data",
+        type=Path,
+        default=None,
+        help="Optional out-of-domain benchmark dir with real/ and fake/ subdirs",
+    )
+    parser.add_argument(
+        "--speaker-disjoint",
+        dest="speaker_disjoint",
+        action="store_true",
+        default=True,
+        help="Use speaker-disjoint train/test split when speaker metadata exists (default: on)",
+    )
+    parser.add_argument(
+        "--no-speaker-disjoint",
+        dest="speaker_disjoint",
+        action="store_false",
+        help="Disable speaker-disjoint split and use stratified random split",
+    )
     args = parser.parse_args()
 
     output_dir: Path = args.output
@@ -1114,20 +1320,40 @@ def main():
     training_date_utc = utc_now_iso()
     training_data_source = None
     training_data_hash = None
+    ood_dfs = None
+
+    if args.ood_data:
+        ood_dir = args.ood_data.resolve()
+        print(f"\nLoading OOD benchmark data from: {ood_dir}")
+        ood_dfs = load_from_directory(ood_dir, seg_duration=args.seg_duration)
+        if not ood_dfs:
+            print("  [WARN] OOD directory provided but no usable WAV files were found.")
+            ood_dfs = None
 
     def train_both_classifiers(df: pd.DataFrame, ft: str, output_dir: Path, test_size: float = 0.2):
         """Train both GBM and XGBoost variants with train/test split, return results dict and best path."""
-        from sklearn.model_selection import train_test_split
-
         results = {}
         best_local_f1 = -1
         best_local_path = None
 
-        # Split data into train/test (80/20 stratified)
-        df_train, df_test = train_test_split(
-            df, test_size=test_size, random_state=42, stratify=df["label"]
+        df_train, df_test, split_mode = split_train_test(
+            df,
+            test_size=test_size,
+            random_state=42,
+            speaker_disjoint=args.speaker_disjoint,
         )
-        print(f"\n  [Data Split] Train: {len(df_train)} | Test: {len(df_test)}")
+        split_note = f"\n  [Data Split] Train: {len(df_train)} | Test: {len(df_test)} ({split_mode})"
+        if "_speaker_id" in df.columns:
+            split_note += (
+                f" | speakers train/test: {df_train['_speaker_id'].nunique()}/"
+                f"{df_test['_speaker_id'].nunique()}"
+            )
+        print(split_note)
+
+        df_ood_ft = None
+        if ood_dfs and ft in ood_dfs:
+            df_ood_ft = ood_dfs[ft]
+            print(f"  [OOD] {ft}: {len(df_ood_ft)} samples")
 
         # Train Gradient Boosting (GBM)
         metrics_gbm, path_gbm = train_single(
@@ -1136,6 +1362,8 @@ def main():
             output_dir,
             classifier_type="gradient_boosting",
             df_test=df_test,
+            df_ood=df_ood_ft,
+            cv_folds=args.cv_folds,
             training_data_hash=training_data_hash,
             training_date_utc=training_date_utc,
             training_data_source=training_data_source,
@@ -1155,6 +1383,8 @@ def main():
             output_dir,
             classifier_type="xgboost",
             df_test=df_test,
+            df_ood=df_ood_ft,
+            cv_folds=args.cv_folds,
             training_data_hash=training_data_hash,
             training_date_utc=training_date_utc,
             training_data_source=training_data_source,
@@ -1204,7 +1434,7 @@ def main():
         print(f"  Detected feature type: {ft} | Rows: {len(df)}")
 
         # If the CSV has hybrid/mfcc_legacy features, train all three variants
-        cols = set(df.columns) - {"label", "_extraction_time"}
+        cols = set(df.columns) - NON_FEATURE_COLUMNS
         has_mfcc = any(c.startswith("MFCC") for c in cols)
         has_fft = "centroid" in cols and "bandwidth" in cols
 
@@ -1249,7 +1479,7 @@ def main():
                 best_path = fft_best_path
 
             # Hybrid: all available features
-            hybrid_cols = [c for c in df.columns if c not in ("label", "_extraction_time")]
+            hybrid_cols = [c for c in df.columns if c not in NON_FEATURE_COLUMNS]
             df_hybrid = df[hybrid_cols + ["label"]].copy()
             hybrid_results, hybrid_best_path, hybrid_best_f1 = train_both_classifiers(
                 df_hybrid, "hybrid", output_dir
@@ -1375,6 +1605,8 @@ def main():
             "output": str(args.output),
             "cv_folds": args.cv_folds,
             "seg_duration": args.seg_duration,
+            "ood_data": str(args.ood_data) if args.ood_data else None,
+            "speaker_disjoint": args.speaker_disjoint,
         },
     }
     manifest_path = write_model_manifest(
