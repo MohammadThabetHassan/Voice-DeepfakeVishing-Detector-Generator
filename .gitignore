@@ -35,11 +35,18 @@ generated/
 
 # Training data (large audio files)
 training/data/
+training/data_external/
 data/
 
 # TTS model cache (large)
 ~/.local/share/tts/
 tts_models/
+checkpoints/
+models_external/
+
+# Local model backups / calibration artifacts
+models/*.bak_20260303
+models/threshold_tuning_samples_20260303.csv
 
 # OS
 Thumbs.db

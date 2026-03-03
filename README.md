@@ -69,7 +69,7 @@ A graduation-quality research project that:
 │ FastAPI Backend (local / Docker / GHCR)                             │
 │   backend/app.py  running at http://localhost:8000                  │
 │                                                                     │
-│  POST /detect        → WAV upload → { prediction, confidence, ... }│
+│  POST /detect        → WAV upload → { prediction, confidence, fake_probability, ... }│
 │  POST /batch-detect  → Multiple WAVs → { results[] }               │
 │  POST /generate      → speaker WAV + text → base64 WAV audio       │
 │  POST /convert-voice → source + target WAV → base64 converted      │
@@ -171,14 +171,14 @@ python training/train.py --csv osr_features.csv --output models/
 #   Place fake WAV files in:  training/data/fake/
 python training/train.py --data training/data/ --output models/
 
-# Option C: train XGBoost models
-python training/train.py --csv osr_features.csv --model-type xgboost --output models/
-
-# Option D: train ensemble model
-python training/train.py --csv osr_features.csv --ensemble --output models/
+# Option C: prepare and train on broader external real/fake data
+python scripts/prepare_external_dataset.py --clean --max-per-label 0
+python training/train.py --data training/data_external --output models_external/
 ```
 
 This creates `models/deepfake_detector_*.pkl` and `models/results.json`.
+
+See `docs/enhancements-and-threshold-tuning-2026-03-03.md` for the latest enhancement review and threshold calibration notes.
 
 ### 3. Start the Backend
 
@@ -346,6 +346,19 @@ Usage:
 ```bash
 curl -X POST "http://localhost:8000/detect?apply_noise_reduction=true&apply_normalization=true" \
   -F "audio=@sample.wav"
+```
+
+### Detection Threshold Tuning
+
+The `/detect` decision uses `DETECTION_FAKE_THRESHOLD` (default: `0.8`).
+
+- Lower threshold (for example `0.7`) increases fake recall, but can increase false positives.
+- Higher threshold (for example `0.85`) reduces false positives, but can miss more fakes.
+
+Run backend with an explicit threshold:
+
+```bash
+DETECTION_FAKE_THRESHOLD=0.8 uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
 ---

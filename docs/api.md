@@ -97,8 +97,13 @@ POST /detect
 {
   "prediction": "fake",
   "confidence": 0.9142,
+  "fake_probability": 0.9142,
+  "threshold": 0.8,
   "model_used": "deepfake_detector_ensemble",
   "feature_type": "ensemble",
+  "windows_analyzed": 20,
+  "voiced_windows": 18,
+  "total_windows": 24,
   "inference_time_s": 0.003,
   "notes": "Deepfake voice detected"
 }
@@ -108,8 +113,13 @@ POST /detect
 |-------|------|-------------|
 | `prediction` | string | Classification result (`real` or `fake`) |
 | `confidence` | float | Confidence score (0.0 to 1.0) |
+| `fake_probability` | float | Estimated probability of fake class (0.0 to 1.0) |
+| `threshold` | float | Decision threshold used for fake classification |
 | `model_used` | string | Name of the model used for inference |
 | `feature_type` | string | Feature extraction type used |
+| `windows_analyzed` | integer | Number of windows used in aggregation |
+| `voiced_windows` | integer | Number of voiced windows detected |
+| `total_windows` | integer | Total candidate windows before selection |
 | `inference_time_s` | float | Inference time in seconds |
 | `notes` | string | Human-readable result description |
 

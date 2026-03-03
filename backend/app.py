@@ -85,6 +85,37 @@ RATE_LIMIT_DETECT = os.environ.get("RATE_LIMIT_DETECT", "30/minute")
 RATE_LIMIT_GENERATE = os.environ.get("RATE_LIMIT_GENERATE", "10/minute")
 RATE_LIMIT_CONVERT = os.environ.get("RATE_LIMIT_CONVERT", "10/minute")
 
+# Detection behavior tuning (env-overridable)
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        log.warning(f"Invalid {name}={value!r}; using default {default}")
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        log.warning(f"Invalid {name}={value!r}; using default {default}")
+        return default
+
+
+# Default tuned for lower false-positive rate on broader external dataset.
+DETECTION_FAKE_THRESHOLD = _env_float("DETECTION_FAKE_THRESHOLD", 0.8)
+DETECTION_WINDOW_SECONDS = _env_float("DETECTION_WINDOW_SECONDS", 1.0)
+DETECTION_HOP_SECONDS = _env_float("DETECTION_HOP_SECONDS", 0.5)
+DETECTION_MAX_WINDOWS = _env_int("DETECTION_MAX_WINDOWS", 20)
+DETECTION_MIN_RMS = _env_float("DETECTION_MIN_RMS", 0.01)
+DETECTION_UNCERTAIN_MARGIN = _env_float("DETECTION_UNCERTAIN_MARGIN", 0.08)
+
 # ─── rate limiter ─────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
 
@@ -370,8 +401,23 @@ def _save_upload(
     raw_path.write_bytes(data)
 
     if raw_suffix == ".wav":
-        if not _convert_to_wav(raw_path, wav_path):
+        # Preserve valid WAV files as-is to avoid lossy/re-encoded conversions
+        # that can distort detector features. Only attempt conversion if the
+        # WAV cannot be parsed by scipy (e.g., mislabeled non-WAV payload).
+        try:
+            from scipy.io import wavfile
+
+            wavfile.read(str(raw_path))
             wav_path = raw_path
+        except Exception:
+            if not _convert_to_wav(raw_path, wav_path):
+                raise HTTPException(
+                    status_code=415,
+                    detail=(
+                        "Uploaded .wav could not be parsed/converted. "
+                        "Please provide a valid WAV file."
+                    ),
+                )
     else:
         if not _convert_to_wav(raw_path, wav_path):
             raise HTTPException(
@@ -1110,9 +1156,14 @@ def _extract_enhanced_features(segment: np.ndarray, sr: int) -> np.ndarray:
     return features
 
 
-def _load_wav_segment(wav_path: Path):
-    """Load WAV → mono float32 @ 16 kHz, return (segment_1s, sr)."""
-    import numpy as np
+def _pad_or_trim_segment(segment: np.ndarray, target_len: int) -> np.ndarray:
+    if len(segment) >= target_len:
+        return segment[:target_len]
+    return np.pad(segment, (0, target_len - len(segment)))
+
+
+def _load_wav_mono_16k(wav_path: Path):
+    """Load WAV and normalize to mono float32 @ 16 kHz."""
     from scipy import signal as scipy_signal
     from scipy.io import wavfile
 
@@ -1124,20 +1175,59 @@ def _load_wav_segment(wav_path: Path):
     if mx > 0:
         data /= mx
     if sr != 16000:
-        data = scipy_signal.resample(data, int(len(data) * 16000 / sr))
+        target_len = max(1, int(len(data) * 16000 / sr))
+        data = scipy_signal.resample(data, target_len).astype(np.float32)
         sr = 16000
-    seg_len = sr
-    segment = data[:seg_len] if len(data) >= seg_len else np.pad(data, (0, seg_len - len(data)))
+    return data, sr
+
+
+def _load_wav_segment(wav_path: Path):
+    """Load WAV → mono float32 @ 16 kHz, return (segment_1s, sr)."""
+    data, sr = _load_wav_mono_16k(wav_path)
+    seg_len = max(1, int(sr * DETECTION_WINDOW_SECONDS))
+    segment = _pad_or_trim_segment(data, seg_len)
     return segment, sr
 
 
-def _extract_features_for_inference(wav_path: Path, feature_type: str = "mfcc_hybrid"):
-    import numpy as np
+def _select_detection_segments(data: np.ndarray, sr: int) -> tuple[list[np.ndarray], dict]:
+    """
+    Pick voiced analysis windows from the full clip.
 
-    segment, sr = _load_wav_segment(wav_path)
+    We prioritize speech-like windows by RMS to avoid making decisions from
+    leading silence/noise and only fall back to all windows if no voiced
+    windows are detected.
+    """
+    win_len = max(1, int(sr * DETECTION_WINDOW_SECONDS))
+    hop_len = max(1, int(sr * DETECTION_HOP_SECONDS))
+    max_windows = max(1, DETECTION_MAX_WINDOWS)
 
+    if len(data) <= win_len:
+        return [_pad_or_trim_segment(data, win_len)], {"total_windows": 1, "voiced_windows": 1}
+
+    windows = []
+    for start in range(0, len(data) - win_len + 1, hop_len):
+        seg = data[start : start + win_len]
+        rms = float(np.sqrt(np.mean(np.square(seg))))
+        windows.append((rms, start, seg))
+
+    if not windows:
+        padded = _pad_or_trim_segment(data, win_len)
+        return [padded], {"total_windows": 1, "voiced_windows": 1}
+
+    voiced = [w for w in windows if w[0] >= DETECTION_MIN_RMS]
+    selected = voiced if voiced else windows
+
+    # Keep highest-energy windows, then sort by timeline order for stable aggregation.
+    selected = sorted(selected, key=lambda x: x[0], reverse=True)[:max_windows]
+    selected = sorted(selected, key=lambda x: x[1])
+
+    segments = [w[2] for w in selected]
+    meta = {"total_windows": len(windows), "voiced_windows": len(voiced)}
+    return segments, meta
+
+
+def _extract_features_from_segment(segment: np.ndarray, sr: int, feature_type: str = "mfcc_hybrid"):
     if feature_type == "ensemble":
-        # Extract all feature types for ensemble
         mfcc = _mfcc_features(segment, sr)
         fft = _fft_features(segment, sr)
         hybrid = np.concatenate([mfcc, fft])
@@ -1155,17 +1245,18 @@ def _extract_features_for_inference(wav_path: Path, feature_type: str = "mfcc_hy
 
     if feature_type == "mfcc":
         return mfcc
-    elif feature_type == "fft":
+    if feature_type == "fft":
         return fft
-    else:
-        return np.concatenate([mfcc, fft])
+    return np.concatenate([mfcc, fft])
 
 
-def _extract_legacy_18_features(wav_path: Path):
-    """18-dim features for original .pkl models (MFCC×13 + centroid/bandwidth/rolloff/jitter/shimmer)."""
-    import numpy as np
-
+def _extract_features_for_inference(wav_path: Path, feature_type: str = "mfcc_hybrid"):
     segment, sr = _load_wav_segment(wav_path)
+    return _extract_features_from_segment(segment, sr, feature_type)
+
+
+def _extract_legacy_18_features_from_segment(segment: np.ndarray, sr: int) -> np.ndarray:
+    """18-dim legacy feature vector used by old detector artifacts."""
     mfcc = _mfcc_features(segment, sr)
 
     spectrum = np.abs(np.fft.rfft(segment))
@@ -1180,6 +1271,33 @@ def _extract_legacy_18_features(wav_path: Path):
     shimmer = float(np.std(np.diff(np.abs(segment))))
 
     return np.concatenate([mfcc, [centroid, bandwidth, rolloff, jitter, shimmer]])
+
+
+def _extract_legacy_18_features(wav_path: Path):
+    """18-dim features for original .pkl models (MFCC×13 + centroid/bandwidth/rolloff/jitter/shimmer)."""
+    segment, sr = _load_wav_segment(wav_path)
+    return _extract_legacy_18_features_from_segment(segment, sr)
+
+
+def _is_fake_label(pred_raw) -> bool:
+    return str(pred_raw).strip().lower() in ("1", "fake", "deepfake")
+
+
+def _extract_fake_probability(model, proba) -> float | None:
+    arr = np.asarray(proba, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return None
+    if arr.size == 1:
+        return float(arr[0])
+
+    classes = getattr(model, "classes_", None)
+    if classes is not None and len(classes) == arr.size:
+        for idx, cls in enumerate(classes):
+            if _is_fake_label(cls):
+                return float(arr[idx])
+
+    # Fallback for binary models that return [P(real), P(fake)].
+    return float(arr[-1])
 
 
 # ─── endpoints ────────────────────────────────────────────────────────────────
@@ -1265,7 +1383,6 @@ async def detect(
         feature_type = detector.get("feature_type", "mfcc_hybrid")
         feat_cols = detector.get("feature_columns", None)
 
-        import numpy as np
         import pandas as pd
 
         col_map = {
@@ -1291,49 +1408,97 @@ async def detect(
         }
 
         expected_cols = feat_cols or col_map.get(feature_type, col_map["mfcc_hybrid"])
-        feats = _extract_features_for_inference(wav_path, feature_type)
+        legacy_cols = [f"MFCC{i + 1}" for i in range(13)] + [
+            "centroid",
+            "bandwidth",
+            "rolloff",
+            "jitter",
+            "shimmer",
+        ]
 
-        # Handle ensemble model
-        if feature_type == "ensemble":
-            # feats is a dict with all feature types
-            pred_raw = model.predict(feats)
-            proba = model.predict_proba(feats)
-            confidence = float(max(proba))
-            prediction = pred_raw
-            notes = "Deepfake voice detected" if prediction == "fake" else "Real voice detected"
-        else:
-            # Handle legacy 18-feature models
-            if len(feats) != len(expected_cols):
-                feats = _extract_legacy_18_features(wav_path)
-                expected_cols = [f"MFCC{i + 1}" for i in range(13)] + [
-                    "centroid",
-                    "bandwidth",
-                    "rolloff",
-                    "jitter",
-                    "shimmer",
-                ]
+        data_16k, sr_16k = _load_wav_mono_16k(wav_path)
+        segments, seg_meta = _select_detection_segments(data_16k, sr_16k)
 
-            df = pd.DataFrame([feats], columns=expected_cols)
-            pred_raw = model.predict(df)[0]
+        fake_probs = []
+        legacy_fallback_used = False
 
-            confidence = 0.5
-            if hasattr(model, "predict_proba"):
-                proba = model.predict_proba(df)[0]
-                confidence = float(max(proba))
+        for segment in segments:
+            if feature_type == "ensemble":
+                feats = _extract_features_from_segment(segment, sr_16k, feature_type)
+                pred_raw = model.predict(feats)
+                if isinstance(pred_raw, (list, tuple, np.ndarray)):
+                    pred_raw = np.asarray(pred_raw).reshape(-1)[0]
 
-            if str(pred_raw) in ("1", "fake", "deepfake"):
-                prediction = "fake"
-                notes = "Deepfake voice detected"
+                fake_prob = None
+                if hasattr(model, "predict_proba"):
+                    proba = model.predict_proba(feats)
+                    fake_prob = _extract_fake_probability(model, proba)
+                if fake_prob is None:
+                    fake_prob = 1.0 if _is_fake_label(pred_raw) else 0.0
             else:
-                prediction = "real"
-                notes = "Real voice detected"
+                feats = _extract_features_from_segment(segment, sr_16k, feature_type)
+                cols = expected_cols
+                if len(feats) != len(expected_cols):
+                    expected_len = len(expected_cols)
+                    mfcc = _mfcc_features(segment, sr_16k)
+                    fft = _fft_features(segment, sr_16k)
+                    hybrid = np.concatenate([mfcc, fft])
+                    legacy = _extract_legacy_18_features_from_segment(segment, sr_16k)
+
+                    candidates = {
+                        len(mfcc): mfcc,
+                        len(fft): fft,
+                        len(hybrid): hybrid,
+                        len(legacy): legacy,
+                    }
+                    if expected_len in candidates:
+                        feats = candidates[expected_len]
+                        if expected_len == len(legacy_cols):
+                            legacy_fallback_used = True
+                    elif expected_len < len(feats):
+                        feats = feats[:expected_len]
+                    else:
+                        feats = np.pad(feats, (0, expected_len - len(feats)))
+
+                df = pd.DataFrame([feats], columns=cols)
+                pred_raw = model.predict(df)[0]
+
+                fake_prob = None
+                if hasattr(model, "predict_proba"):
+                    proba = model.predict_proba(df)[0]
+                    fake_prob = _extract_fake_probability(model, proba)
+                if fake_prob is None:
+                    fake_prob = 1.0 if _is_fake_label(pred_raw) else 0.0
+
+            fake_probs.append(float(np.clip(fake_prob, 0.0, 1.0)))
+
+        if not fake_probs:
+            raise HTTPException(500, "Detection failed: no analyzable audio windows.")
+
+        fake_probability = float(np.median(fake_probs))
+        prediction = "fake" if fake_probability >= DETECTION_FAKE_THRESHOLD else "real"
+        confidence = float(max(fake_probability, 1.0 - fake_probability))
+
+        notes = "Deepfake voice detected" if prediction == "fake" else "Real voice detected"
+        if len(fake_probs) > 1:
+            voiced = seg_meta.get("voiced_windows", len(fake_probs))
+            notes += f" ({len(fake_probs)} windows analyzed, {voiced} voiced)"
+        if legacy_fallback_used:
+            notes += "; legacy feature mode"
+        if abs(fake_probability - DETECTION_FAKE_THRESHOLD) <= DETECTION_UNCERTAIN_MARGIN:
+            notes += "; borderline score (out-of-domain audio can be unreliable)"
 
         return JSONResponse(
             {
                 "prediction": prediction,
                 "confidence": round(confidence, 4),
+                "fake_probability": round(fake_probability, 4),
+                "threshold": round(DETECTION_FAKE_THRESHOLD, 4),
                 "model_used": detector.get("model_name", "unknown"),
                 "feature_type": feature_type,
+                "windows_analyzed": len(fake_probs),
+                "voiced_windows": seg_meta.get("voiced_windows", len(fake_probs)),
+                "total_windows": seg_meta.get("total_windows", len(fake_probs)),
                 "inference_time_s": round(time.time() - t0, 3),
                 "notes": notes,
             }
