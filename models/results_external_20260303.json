@@ -1,0 +1,266 @@
+{
+  "mfcc_gbm": {
+    "accuracy": 0.9088,
+    "precision": 0.9054,
+    "recall": 0.9043,
+    "f1": 0.9049,
+    "confusion_matrix": [
+      [
+        718,
+        76
+      ],
+      [
+        75,
+        786
+      ]
+    ],
+    "cv_time_s": 7.49,
+    "test_accuracy": 0.9106,
+    "test_precision": 0.9219,
+    "test_recall": 0.8894,
+    "test_f1": 0.9054,
+    "test_confusion_matrix": [
+      [
+        177,
+        22
+      ],
+      [
+        15,
+        200
+      ]
+    ],
+    "inference_1k_ms": 608.0,
+    "avg_feature_extraction_ms": 4.573
+  },
+  "mfcc_xgboost": {
+    "accuracy": 0.9154,
+    "precision": 0.9098,
+    "recall": 0.9144,
+    "f1": 0.9121,
+    "confusion_matrix": [
+      [
+        789,
+        72
+      ],
+      [
+        68,
+        726
+      ]
+    ],
+    "cv_time_s": 0.84,
+    "test_accuracy": 0.9106,
+    "test_precision": 0.9263,
+    "test_recall": 0.8844,
+    "test_f1": 0.9049,
+    "test_confusion_matrix": [
+      [
+        201,
+        14
+      ],
+      [
+        23,
+        176
+      ]
+    ],
+    "inference_1k_ms": 755.0,
+    "avg_feature_extraction_ms": 4.573
+  },
+  "fft_gbm": {
+    "accuracy": 0.7082,
+    "precision": 0.6976,
+    "recall": 0.6914,
+    "f1": 0.6945,
+    "confusion_matrix": [
+      [
+        549,
+        245
+      ],
+      [
+        238,
+        623
+      ]
+    ],
+    "cv_time_s": 4.01,
+    "test_accuracy": 0.6908,
+    "test_precision": 0.6983,
+    "test_recall": 0.6281,
+    "test_f1": 0.6614,
+    "test_confusion_matrix": [
+      [
+        125,
+        74
+      ],
+      [
+        54,
+        161
+      ]
+    ],
+    "inference_1k_ms": 598.0,
+    "avg_feature_extraction_ms": 0.601
+  },
+  "fft_xgboost": {
+    "accuracy": 0.7094,
+    "precision": 0.6994,
+    "recall": 0.6914,
+    "f1": 0.6954,
+    "confusion_matrix": [
+      [
+        625,
+        236
+      ],
+      [
+        245,
+        549
+      ]
+    ],
+    "cv_time_s": 0.46,
+    "test_accuracy": 0.6884,
+    "test_precision": 0.7059,
+    "test_recall": 0.603,
+    "test_f1": 0.6504,
+    "test_confusion_matrix": [
+      [
+        165,
+        50
+      ],
+      [
+        79,
+        120
+      ]
+    ],
+    "inference_1k_ms": 766.0,
+    "avg_feature_extraction_ms": 0.601
+  },
+  "hybrid_gbm": {
+    "accuracy": 0.9227,
+    "precision": 0.9173,
+    "recall": 0.9219,
+    "f1": 0.9196,
+    "confusion_matrix": [
+      [
+        732,
+        62
+      ],
+      [
+        66,
+        795
+      ]
+    ],
+    "cv_time_s": 9.68,
+    "test_accuracy": 0.9179,
+    "test_precision": 0.9319,
+    "test_recall": 0.8945,
+    "test_f1": 0.9128,
+    "test_confusion_matrix": [
+      [
+        178,
+        21
+      ],
+      [
+        13,
+        202
+      ]
+    ],
+    "inference_1k_ms": 573.0,
+    "avg_feature_extraction_ms": 5.024
+  },
+  "hybrid_xgboost": {
+    "accuracy": 0.9305,
+    "precision": 0.9228,
+    "recall": 0.9332,
+    "f1": 0.928,
+    "confusion_matrix": [
+      [
+        799,
+        62
+      ],
+      [
+        53,
+        741
+      ]
+    ],
+    "cv_time_s": 0.72,
+    "test_accuracy": 0.913,
+    "test_precision": 0.9137,
+    "test_recall": 0.9045,
+    "test_f1": 0.9091,
+    "test_confusion_matrix": [
+      [
+        198,
+        17
+      ],
+      [
+        19,
+        180
+      ]
+    ],
+    "inference_1k_ms": 785.0,
+    "avg_feature_extraction_ms": 5.024
+  },
+  "enhanced_gbm": {
+    "accuracy": 0.9571,
+    "precision": 0.9582,
+    "recall": 0.9521,
+    "f1": 0.9551,
+    "confusion_matrix": [
+      [
+        756,
+        38
+      ],
+      [
+        33,
+        828
+      ]
+    ],
+    "cv_time_s": 35.29,
+    "test_accuracy": 0.9469,
+    "test_precision": 0.9492,
+    "test_recall": 0.9397,
+    "test_f1": 0.9444,
+    "test_confusion_matrix": [
+      [
+        187,
+        12
+      ],
+      [
+        10,
+        205
+      ]
+    ],
+    "inference_1k_ms": 599.0,
+    "avg_feature_extraction_ms": 36.83
+  },
+  "enhanced_xgboost": {
+    "accuracy": 0.9571,
+    "precision": 0.957,
+    "recall": 0.9534,
+    "f1": 0.9552,
+    "confusion_matrix": [
+      [
+        827,
+        34
+      ],
+      [
+        37,
+        757
+      ]
+    ],
+    "cv_time_s": 1.77,
+    "test_accuracy": 0.9517,
+    "test_precision": 0.9453,
+    "test_recall": 0.9548,
+    "test_f1": 0.95,
+    "test_confusion_matrix": [
+      [
+        204,
+        11
+      ],
+      [
+        9,
+        190
+      ]
+    ],
+    "inference_1k_ms": 863.0,
+    "avg_feature_extraction_ms": 36.83
+  }
+}
