@@ -1135,10 +1135,11 @@ async function loadResults() {
 
   // Try fetching results.json; path is relative to root when deployed
   const paths = [
+    ...(apiBaseUrl ? [`${apiBaseUrl}/model-results`] : []),
     './models/results.json',
     '../models/results.json',
     '/Voice-Deepfake-Vishing-Detector-Generator/models/results.json',
-    'https://mohammadthabethassan.github.io/Voice-DeepfakeVishing-Detector-Generator/models/results.json',
+    'https://mohammadthabethassan.github.io/Voice-Deepfake-Vishing-Detector-Generator/models/results.json',
   ];
 
   let data = null;

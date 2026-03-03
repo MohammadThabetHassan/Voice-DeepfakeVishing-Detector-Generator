@@ -36,6 +36,7 @@ For IndexTTS2 voice cloning (optional, requires PyTorch + ~4 GB VRAM or CPU):
 """
 
 import base64
+import json
 import logging
 import os
 import sys
@@ -1561,6 +1562,31 @@ def health(request: Request):
         "indextts2_dir": str(INDEXTTS_DIR),
         "gtts_available": _gtts_available,
     }
+
+
+@app.get("/model-results", response_model=None)
+@limiter.limit(RATE_LIMIT_HEALTH)
+def model_results(request: Request):
+    """Return models/results.json so frontend can load metrics in local mode."""
+    results_path = MODELS_DIR / "results.json"
+    if not results_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "results.json not found. Run training to generate it, e.g. "
+                "python3 training/train.py --csv osr_features.csv --output models/"
+            ),
+        )
+    try:
+        with results_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("results.json must contain an object")
+        return JSONResponse(data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read model results: {e}")
 
 
 @app.post("/detect", response_model=None)
