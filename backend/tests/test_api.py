@@ -65,6 +65,16 @@ def test_health_returns_ok():
     assert "threshold_profile" in data
     assert "detection_fake_threshold" in data
     assert "uncertain_margin" in data
+    assert "quality_gate_enabled" in data
+    assert "min_quality_score" in data
+
+
+def test_model_results_endpoint():
+    resp = client.get("/model-results")
+    assert resp.status_code in (200, 404)
+    if resp.status_code == 200:
+        data = resp.json()
+        assert isinstance(data, dict)
 
 
 # ─── Detect ───────────────────────────────────────────────────────────────────
@@ -93,6 +103,9 @@ def test_detect_valid_wav():
         assert 0.0 <= data["fake_probability"] <= 1.0
         assert "confidence" in data
         assert 0.0 <= data["confidence"] <= 1.0
+        assert "quality_score" in data
+        assert 0.0 <= data["quality_score"] <= 1.0
+        assert "quality_warnings" in data
 
 
 def test_detect_short_audio():

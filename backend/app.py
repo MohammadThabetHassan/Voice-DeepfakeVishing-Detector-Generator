@@ -145,6 +145,9 @@ DETECTION_UNCERTAIN_MARGIN = _env_float(
     "DETECTION_UNCERTAIN_MARGIN", _profile_defaults["uncertain_margin"]
 )
 DETECTION_STRICT_SCHEMA_CHECK = _env_bool("DETECTION_STRICT_SCHEMA_CHECK", True)
+DETECTION_ENABLE_QUALITY_GATE = _env_bool("DETECTION_ENABLE_QUALITY_GATE", True)
+DETECTION_REJECT_LOW_QUALITY = _env_bool("DETECTION_REJECT_LOW_QUALITY", False)
+DETECTION_MIN_QUALITY_SCORE = _env_float("DETECTION_MIN_QUALITY_SCORE", 0.35)
 
 # ─── rate limiter ─────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
@@ -1371,6 +1374,80 @@ def _load_wav_mono_16k(wav_path: Path):
     return data, sr
 
 
+def _assess_audio_quality(data: np.ndarray, sr: int) -> dict:
+    """Compute lightweight quality metrics and warnings for reliability gating."""
+    eps = 1e-10
+    if data.size == 0:
+        return {
+            "quality_score": 0.0,
+            "warnings": ["empty audio"],
+            "metrics": {
+                "duration_s": 0.0,
+                "rms": 0.0,
+                "peak": 0.0,
+                "clipping_ratio": 1.0,
+                "voiced_ratio": 0.0,
+                "snr_proxy_db": 0.0,
+            },
+        }
+
+    x = np.asarray(data, dtype=np.float32)
+    abs_x = np.abs(x)
+    duration_s = float(len(x) / max(sr, 1))
+    rms = float(np.sqrt(np.mean(x**2)))
+    peak = float(np.max(abs_x))
+    clipping_ratio = float(np.mean(abs_x >= 0.98))
+
+    frame_len = max(1, int(0.02 * sr))
+    hop_len = max(1, int(0.01 * sr))
+    frames = []
+    for start in range(0, max(1, len(x) - frame_len + 1), hop_len):
+        frame = x[start : start + frame_len]
+        if frame.size == frame_len:
+            frames.append(frame)
+    if not frames:
+        frames = [x]
+    frame_rms = np.array([np.sqrt(np.mean(f**2)) for f in frames], dtype=np.float32)
+    voiced_threshold = max(0.008, float(np.median(frame_rms) * 1.15))
+    voiced_ratio = float(np.mean(frame_rms >= voiced_threshold))
+
+    p95 = float(np.percentile(abs_x, 95))
+    p20 = float(np.percentile(abs_x, 20))
+    snr_proxy_db = float(20.0 * np.log10((p95 + eps) / (p20 + eps)))
+
+    penalties = 0.0
+    warnings = []
+    if rms < 0.006:
+        penalties += 0.28
+        warnings.append("very low volume")
+    if clipping_ratio > 0.02:
+        penalties += min(0.35, clipping_ratio * 4.0)
+        warnings.append("possible clipping/distortion")
+    if voiced_ratio < 0.2:
+        penalties += 0.28
+        warnings.append("low speech content")
+    if snr_proxy_db < 8.0:
+        penalties += 0.22
+        warnings.append("high background noise")
+    if duration_s < 1.0:
+        penalties += 0.1
+        warnings.append("very short recording")
+
+    quality_score = float(np.clip(1.0 - penalties, 0.0, 1.0))
+    return {
+        "quality_score": quality_score,
+        "warnings": warnings,
+        "metrics": {
+            "duration_s": round(duration_s, 3),
+            "rms": round(rms, 6),
+            "peak": round(peak, 6),
+            "clipping_ratio": round(clipping_ratio, 6),
+            "voiced_ratio": round(voiced_ratio, 4),
+            "snr_proxy_db": round(snr_proxy_db, 2),
+        },
+    }
+
+
 def _load_wav_segment(wav_path: Path):
     """Load WAV → mono float32 @ 16 kHz, return (segment_1s, sr)."""
     data, sr = _load_wav_mono_16k(wav_path)
@@ -1532,6 +1609,8 @@ def health(request: Request):
             "training_data_hash",
             "classifier_type",
             "feature_type",
+            "is_calibrated",
+            "calibration_method",
             "recommended_threshold_profiles",
         )
         manifest_info = {k: detector.get(k) for k in manifest_keys if detector.get(k) is not None}
@@ -1556,6 +1635,9 @@ def health(request: Request):
         "threshold_profile": DETECTION_THRESHOLD_PROFILE,
         "detection_fake_threshold": DETECTION_FAKE_THRESHOLD,
         "uncertain_margin": DETECTION_UNCERTAIN_MARGIN,
+        "quality_gate_enabled": DETECTION_ENABLE_QUALITY_GATE,
+        "reject_low_quality": DETECTION_REJECT_LOW_QUALITY,
+        "min_quality_score": DETECTION_MIN_QUALITY_SCORE,
         "tts_engine": tts_engine,
         "xtts_v2_available": _xtts_available,
         "indextts2_available": _indextts2_available,
@@ -1661,6 +1743,21 @@ async def detect(
         legacy_enhanced_dim = 30
 
         data_16k, sr_16k = _load_wav_mono_16k(wav_path)
+        quality = _assess_audio_quality(data_16k, sr_16k)
+        quality_score = float(quality["quality_score"])
+        quality_warnings = list(quality.get("warnings", []))
+        quality_metrics = dict(quality.get("metrics", {}))
+        low_quality = DETECTION_ENABLE_QUALITY_GATE and quality_score < DETECTION_MIN_QUALITY_SCORE
+        if low_quality and DETECTION_REJECT_LOW_QUALITY:
+            raise HTTPException(
+                400,
+                (
+                    f"Audio quality too low for reliable detection "
+                    f"(quality_score={quality_score:.2f}, minimum={DETECTION_MIN_QUALITY_SCORE:.2f}). "
+                    "Try cleaner audio with less noise and clipping."
+                ),
+            )
+
         segments, seg_meta = _select_detection_segments(data_16k, sr_16k)
 
         fake_probs = []
@@ -1730,6 +1827,8 @@ async def detect(
         confidence = float(max(fake_probability, 1.0 - fake_probability))
         decision_distance = abs(fake_probability - DETECTION_FAKE_THRESHOLD)
         is_uncertain = decision_distance <= DETECTION_UNCERTAIN_MARGIN
+        if low_quality:
+            is_uncertain = True
         prediction = "uncertain" if is_uncertain else base_prediction
 
         notes = "Deepfake voice detected" if base_prediction == "fake" else "Real voice detected"
@@ -1740,6 +1839,8 @@ async def detect(
             notes += "; legacy feature mode"
         if is_uncertain:
             notes += "; borderline score (out-of-domain audio can be unreliable)"
+        if quality_warnings:
+            notes += f"; quality issues: {', '.join(quality_warnings)}"
 
         return JSONResponse(
             {
@@ -1757,6 +1858,9 @@ async def detect(
                 "windows_analyzed": len(fake_probs),
                 "voiced_windows": seg_meta.get("voiced_windows", len(fake_probs)),
                 "total_windows": seg_meta.get("total_windows", len(fake_probs)),
+                "quality_score": round(quality_score, 4),
+                "quality_warnings": quality_warnings,
+                "quality_metrics": quality_metrics,
                 "inference_time_s": round(time.time() - t0, 3),
                 "notes": notes,
             }

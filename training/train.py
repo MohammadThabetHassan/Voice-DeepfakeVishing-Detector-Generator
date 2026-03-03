@@ -46,6 +46,7 @@ import pandas as pd
 import scipy.fftpack as fftpack
 from scipy import signal as scipy_signal
 from scipy.io import wavfile
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -1045,6 +1046,8 @@ def train_single(
     df_test: pd.DataFrame = None,
     df_ood: pd.DataFrame = None,
     cv_folds: int = 5,
+    calibration_method: str = "sigmoid",
+    calibration_cv_folds: int = 3,
     training_data_hash: str | None = None,
     training_date_utc: str | None = None,
     training_data_source: str | None = None,
@@ -1098,8 +1101,38 @@ def train_single(
     )
     cv_time = time.perf_counter() - t0
 
-    # Train final model on all training data
-    clf.fit(X_train, y_train_encoded)
+    # Train final model on all training data (with optional probability calibration).
+    model_for_inference = clf
+    calibration_applied = False
+    calibration_reason = "disabled"
+    if calibration_method != "none":
+        class_counts = pd.Series(y_train_encoded).value_counts()
+        min_class = int(class_counts.min()) if not class_counts.empty else 0
+        safe_cal_folds = max(2, min(int(calibration_cv_folds), min_class))
+        if min_class >= 2 and safe_cal_folds >= 2:
+            try:
+                model_for_inference = CalibratedClassifierCV(
+                    estimator=clf,
+                    method=calibration_method,
+                    cv=safe_cal_folds,
+                )
+                model_for_inference.fit(X_train, y_train_encoded)
+                calibration_applied = True
+                calibration_reason = f"{calibration_method}:{safe_cal_folds}fold"
+                print(f"  Calibration applied ({calibration_reason})")
+            except Exception as e:
+                calibration_reason = f"failed:{e}"
+                print(f"  [WARN] Calibration failed ({e}); using base classifier.")
+                model_for_inference = clf
+                model_for_inference.fit(X_train, y_train_encoded)
+        else:
+            calibration_reason = f"insufficient_data(min_class={min_class})"
+            print("  [WARN] Skipping calibration: insufficient per-class samples.")
+            model_for_inference = clf
+            model_for_inference.fit(X_train, y_train_encoded)
+    else:
+        model_for_inference = clf
+        model_for_inference.fit(X_train, y_train_encoded)
 
     # Evaluate on test set if provided
     if df_test is not None:
@@ -1108,9 +1141,11 @@ def train_single(
         # Encode test labels for XGBoost
         if classifier_type == "xgboost":
             y_test_encoded = np.array([label_map.get(label, label) for label in y_test])
-            test_metrics = evaluate_on_test_set(clf, X_test, y_test_encoded, pos_label=pos_label)
+            test_metrics = evaluate_on_test_set(
+                model_for_inference, X_test, y_test_encoded, pos_label=pos_label
+            )
         else:
-            test_metrics = evaluate_on_test_set(clf, X_test, y_test, pos_label=pos_label)
+            test_metrics = evaluate_on_test_set(model_for_inference, X_test, y_test, pos_label=pos_label)
         print(f"  Test F1={test_metrics['f1']:.4f}  Test Acc={test_metrics['accuracy']:.4f}")
     else:
         test_metrics = None
@@ -1119,7 +1154,7 @@ def train_single(
     if df_ood is not None and len(df_ood) > 0:
         try:
             ood_global, ood_by_source = evaluate_with_source_breakdown(
-                clf=clf,
+                clf=model_for_inference,
                 df_eval=df_ood,
                 feat_cols=feat_cols,
                 classifier_type=classifier_type,
@@ -1141,7 +1176,7 @@ def train_single(
     bench_feats = X_train[:1]
     bench_start = time.perf_counter()
     for _ in range(1000):
-        clf.predict(bench_feats)
+        model_for_inference.predict(bench_feats)
     bench_ms = round((time.perf_counter() - bench_start), 3)
 
     # Combine metrics — use top-level keys for compatibility with results table
@@ -1170,6 +1205,10 @@ def train_single(
         metrics["ood_samples"] = int(len(df_ood))
         metrics["ood_by_source"] = ood_by_source
 
+    metrics["calibration_applied"] = calibration_applied
+    metrics["calibration_method"] = calibration_method if calibration_applied else "none"
+    metrics["calibration_info"] = calibration_reason
+
     metrics["inference_1k_ms"] = round(bench_ms * 1000, 1)
     if avg_extract_ms:
         metrics["avg_feature_extraction_ms"] = avg_extract_ms
@@ -1184,13 +1223,16 @@ def train_single(
     ).hexdigest()[:16]
 
     model_obj = {
-        "model": clf,
+        "model": model_for_inference,
         "model_id": model_id,
         "model_name": model_name,
         "feature_type": feature_type,
         "classifier_type": classifier_type,
         "feature_columns": feat_cols,
         "metrics": metrics,
+        "is_calibrated": calibration_applied,
+        "calibration_method": calibration_method if calibration_applied else "none",
+        "calibration_cv_folds": calibration_cv_folds if calibration_applied else 0,
         "training_date_utc": trained_at,
         "training_data_hash": training_data_hash,
         "training_data_source": training_data_source,
@@ -1240,6 +1282,8 @@ def write_model_manifest(output_dir: Path, run_info: dict, best_model_name: str 
             "path": model_path.name,
             "feature_type": obj.get("feature_type"),
             "classifier_type": obj.get("classifier_type"),
+            "is_calibrated": obj.get("is_calibrated", False),
+            "calibration_method": obj.get("calibration_method", "none"),
             "feature_count": feature_count,
             "training_date_utc": obj.get("training_date_utc"),
             "training_data_hash": obj.get("training_data_hash"),
@@ -1293,6 +1337,18 @@ def main():
         type=Path,
         default=None,
         help="Optional out-of-domain benchmark dir with real/ and fake/ subdirs",
+    )
+    parser.add_argument(
+        "--calibration-method",
+        choices=["none", "sigmoid", "isotonic"],
+        default="sigmoid",
+        help="Probability calibration method for final model (default: sigmoid)",
+    )
+    parser.add_argument(
+        "--calibration-cv-folds",
+        type=int,
+        default=3,
+        help="Cross-validation folds for calibration model fitting",
     )
     parser.add_argument(
         "--speaker-disjoint",
@@ -1364,6 +1420,8 @@ def main():
             df_test=df_test,
             df_ood=df_ood_ft,
             cv_folds=args.cv_folds,
+            calibration_method=args.calibration_method,
+            calibration_cv_folds=args.calibration_cv_folds,
             training_data_hash=training_data_hash,
             training_date_utc=training_date_utc,
             training_data_source=training_data_source,
@@ -1385,6 +1443,8 @@ def main():
             df_test=df_test,
             df_ood=df_ood_ft,
             cv_folds=args.cv_folds,
+            calibration_method=args.calibration_method,
+            calibration_cv_folds=args.calibration_cv_folds,
             training_data_hash=training_data_hash,
             training_date_utc=training_date_utc,
             training_data_source=training_data_source,
@@ -1607,6 +1667,8 @@ def main():
             "seg_duration": args.seg_duration,
             "ood_data": str(args.ood_data) if args.ood_data else None,
             "speaker_disjoint": args.speaker_disjoint,
+            "calibration_method": args.calibration_method,
+            "calibration_cv_folds": args.calibration_cv_folds,
         },
     }
     manifest_path = write_model_manifest(

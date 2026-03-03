@@ -873,6 +873,8 @@ $('#detect-form').addEventListener('submit', async e => {
     const conf = data.confidence != null ? `${(data.confidence * 100).toFixed(1)}%` : 'N/A';
     const fakeProb = data.fake_probability != null ? `${(data.fake_probability * 100).toFixed(1)}%` : 'N/A';
     const threshold = data.threshold != null ? `${(data.threshold * 100).toFixed(1)}%` : 'N/A';
+    const qualityScore = data.quality_score != null ? `${(data.quality_score * 100).toFixed(1)}%` : 'N/A';
+    const qualityWarnings = Array.isArray(data.quality_warnings) ? data.quality_warnings : [];
 
     let type = 'real';
     let label = '✓ Real Voice';
@@ -897,6 +899,9 @@ $('#detect-form').addEventListener('submit', async e => {
         Features: ${data.feature_type || 'N/A'} &nbsp;|&nbsp;
         Windows: ${data.windows_analyzed ?? 'N/A'} &nbsp;|&nbsp;
         Inference: ${data.inference_time_s != null ? data.inference_time_s + 's' : 'N/A'}
+      </div>
+      <div class="result-meta">
+        Quality score: ${qualityScore}${qualityWarnings.length ? ` &nbsp;|&nbsp; Warnings: ${qualityWarnings.join(', ')}` : ''}
       </div>
       ${data.notes ? `<p style="margin-top:.5rem;font-size:.85rem;">${data.notes}</p>` : ''}
     `, type);
@@ -1064,6 +1069,7 @@ function saveDetectionResult(result, filename) {
     confidence: result.confidence,
     fake_probability: result.fake_probability,
     threshold: result.threshold,
+    quality_score: result.quality_score,
     model_used: result.model_used || 'unknown'
   };
 

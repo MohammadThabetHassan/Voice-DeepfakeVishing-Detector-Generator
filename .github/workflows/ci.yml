@@ -93,6 +93,17 @@ jobs:
           fi
           ls -lh models/ 2>/dev/null || true
 
+      - name: Regression guard (F1/FPR thresholds)
+        run: |
+          python scripts/check_model_regression.py \
+            --results models/results.json \
+            --required-model mfcc_gbm \
+            --required-model hybrid_gbm \
+            --check-model mfcc_gbm \
+            --check-model hybrid_gbm \
+            --min-f1 0.80 \
+            --max-fpr 0.20
+
       - name: Upload model artifacts
         uses: actions/upload-artifact@v4
         if: always()

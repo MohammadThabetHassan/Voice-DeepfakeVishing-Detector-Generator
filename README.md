@@ -30,6 +30,8 @@ A graduation-quality research project that:
 - **Audio Preprocessing** — Optional noise reduction and loudness normalization
 - **Enhanced ML Features** — Pitch, jitter, shimmer, and delta MFCCs for improved accuracy
 - **XGBoost & Ensemble Models** — Soft voting across multiple classifiers
+- **Calibration Support** — Train calibrated probability models (`sigmoid` / `isotonic`)
+- **Audio Quality Gate** — Detects low-quality inputs and marks them uncertain (or rejects via env config)
 - **Uncertain Decision Band** — Borderline scores are reported as `uncertain` instead of forced binary output
 - **Multiple Model Types** — MFCC-only, FFT-only, Hybrid, Enhanced (75-dim), and Ensemble
 
@@ -262,6 +264,9 @@ Run `cat models/results.json` to see actual computed metrics.
 # Train on existing CSV (auto-detects feature type)
 python training/train.py --csv osr_features.csv --output models/
 
+# Train with calibrated probabilities (default: sigmoid)
+python training/train.py --csv osr_features.csv --calibration-method sigmoid --output models/
+
 # Train on WAV directory
 python training/train.py --data training/data/ --output models/
 
@@ -377,6 +382,14 @@ DETECTION_FAKE_THRESHOLD=0.85 \
 DETECTION_UNCERTAIN_MARGIN=0.06 \
 uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
+
+### Audio Quality Gate
+
+Detection quality controls (env vars):
+
+- `DETECTION_ENABLE_QUALITY_GATE=true` (default)
+- `DETECTION_MIN_QUALITY_SCORE=0.35`
+- `DETECTION_REJECT_LOW_QUALITY=false` (set `true` to return 400 for very poor audio)
 
 ---
 
