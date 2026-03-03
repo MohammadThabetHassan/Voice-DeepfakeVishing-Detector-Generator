@@ -383,6 +383,9 @@ DETECTION_UNCERTAIN_MARGIN=0.06 \
 uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
+When calibrated models are loaded, the detector uses `fake_probability_calibrated`
+for threshold decisions by default and also returns `fake_probability_raw` for comparison.
+
 ### Audio Quality Gate
 
 Detection quality controls (env vars):

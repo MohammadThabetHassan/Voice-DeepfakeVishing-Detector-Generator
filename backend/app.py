@@ -1374,6 +1374,33 @@ def _load_wav_mono_16k(wav_path: Path):
     return data, sr
 
 
+def _load_wav_mono_16k_for_quality(wav_path: Path):
+    """
+    Load WAV mono @16k without per-file peak normalization.
+    Preserves absolute level/clipping cues for quality assessment.
+    """
+    from scipy import signal as scipy_signal
+    from scipy.io import wavfile
+
+    sr, data = wavfile.read(str(wav_path))
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+
+    if np.issubdtype(data.dtype, np.integer):
+        info = np.iinfo(data.dtype)
+        scale = float(max(abs(info.min), info.max))
+        data = data.astype(np.float32) / (scale + 1e-10)
+    else:
+        data = data.astype(np.float32)
+        data = np.clip(data, -1.0, 1.0)
+
+    if sr != 16000:
+        target_len = max(1, int(len(data) * 16000 / sr))
+        data = scipy_signal.resample(data, target_len).astype(np.float32)
+        sr = 16000
+    return data, sr
+
+
 def _assess_audio_quality(data: np.ndarray, sr: int) -> dict:
     """Compute lightweight quality metrics and warnings for reliability gating."""
     eps = 1e-10
@@ -1611,6 +1638,7 @@ def health(request: Request):
             "feature_type",
             "is_calibrated",
             "calibration_method",
+            "probability_source",
             "recommended_threshold_profiles",
         )
         manifest_info = {k: detector.get(k) for k in manifest_keys if detector.get(k) is not None}
@@ -1707,6 +1735,8 @@ async def detect(
             )
 
         model = detector["model"]
+        raw_model = detector.get("raw_model")
+        model_is_calibrated = bool(detector.get("is_calibrated", False))
         feature_type = detector.get("feature_type", "mfcc_hybrid")
         feat_cols = detector.get("feature_columns", None)
 
@@ -1742,12 +1772,15 @@ async def detect(
         ]
         legacy_enhanced_dim = 30
 
-        data_16k, sr_16k = _load_wav_mono_16k(wav_path)
-        quality = _assess_audio_quality(data_16k, sr_16k)
+        quality_data_16k, quality_sr_16k = _load_wav_mono_16k_for_quality(wav_path)
+        quality = _assess_audio_quality(quality_data_16k, quality_sr_16k)
         quality_score = float(quality["quality_score"])
         quality_warnings = list(quality.get("warnings", []))
         quality_metrics = dict(quality.get("metrics", {}))
         low_quality = DETECTION_ENABLE_QUALITY_GATE and quality_score < DETECTION_MIN_QUALITY_SCORE
+        severe_low_quality = DETECTION_ENABLE_QUALITY_GATE and quality_score < max(
+            0.08, DETECTION_MIN_QUALITY_SCORE * 0.25
+        )
         if low_quality and DETECTION_REJECT_LOW_QUALITY:
             raise HTTPException(
                 400,
@@ -1758,9 +1791,11 @@ async def detect(
                 ),
             )
 
+        data_16k, sr_16k = _load_wav_mono_16k(wav_path)
         segments, seg_meta = _select_detection_segments(data_16k, sr_16k)
 
-        fake_probs = []
+        fake_probs_cal = []
+        fake_probs_raw = []
         legacy_fallback_used = False
 
         for segment in segments:
@@ -1817,30 +1852,60 @@ async def detect(
                 if fake_prob is None:
                     fake_prob = 1.0 if _is_fake_label(pred_raw) else 0.0
 
-            fake_probs.append(float(np.clip(fake_prob, 0.0, 1.0)))
+                raw_fake_prob = None
+                if raw_model is not None:
+                    try:
+                        raw_pred = raw_model.predict(df)[0]
+                        if hasattr(raw_model, "predict_proba"):
+                            raw_proba = raw_model.predict_proba(df)[0]
+                            raw_fake_prob = _extract_fake_probability(raw_model, raw_proba)
+                        if raw_fake_prob is None:
+                            raw_fake_prob = 1.0 if _is_fake_label(raw_pred) else 0.0
+                    except Exception:
+                        raw_fake_prob = None
 
-        if not fake_probs:
+            fake_probs_cal.append(float(np.clip(fake_prob, 0.0, 1.0)))
+            if feature_type != "ensemble" and raw_model is not None and raw_fake_prob is not None:
+                fake_probs_raw.append(float(np.clip(raw_fake_prob, 0.0, 1.0)))
+
+        if not fake_probs_cal:
             raise HTTPException(500, "Detection failed: no analyzable audio windows.")
 
-        fake_probability = float(np.median(fake_probs))
+        fake_probability_calibrated = float(np.median(fake_probs_cal))
+        fake_probability_raw = (
+            float(np.median(fake_probs_raw)) if fake_probs_raw else fake_probability_calibrated
+        )
+        use_calibrated_probability = model_is_calibrated and bool(fake_probs_raw)
+        probability_source = "calibrated" if use_calibrated_probability else "raw"
+        fake_probability = (
+            fake_probability_calibrated if use_calibrated_probability else fake_probability_raw
+        )
         base_prediction = "fake" if fake_probability >= DETECTION_FAKE_THRESHOLD else "real"
         confidence = float(max(fake_probability, 1.0 - fake_probability))
         decision_distance = abs(fake_probability - DETECTION_FAKE_THRESHOLD)
-        is_uncertain = decision_distance <= DETECTION_UNCERTAIN_MARGIN
-        if low_quality:
+        quality_margin_boost = (
+            max(0.0, DETECTION_MIN_QUALITY_SCORE - quality_score) * 0.25
+            if DETECTION_ENABLE_QUALITY_GATE
+            else 0.0
+        )
+        effective_uncertain_margin = DETECTION_UNCERTAIN_MARGIN + quality_margin_boost
+        is_uncertain = decision_distance <= effective_uncertain_margin
+        if severe_low_quality:
             is_uncertain = True
         prediction = "uncertain" if is_uncertain else base_prediction
 
         notes = "Deepfake voice detected" if base_prediction == "fake" else "Real voice detected"
-        if len(fake_probs) > 1:
-            voiced = seg_meta.get("voiced_windows", len(fake_probs))
-            notes += f" ({len(fake_probs)} windows analyzed, {voiced} voiced)"
+        if len(fake_probs_cal) > 1:
+            voiced = seg_meta.get("voiced_windows", len(fake_probs_cal))
+            notes += f" ({len(fake_probs_cal)} windows analyzed, {voiced} voiced)"
         if legacy_fallback_used:
             notes += "; legacy feature mode"
         if is_uncertain:
             notes += "; borderline score (out-of-domain audio can be unreliable)"
         if quality_warnings:
             notes += f"; quality issues: {', '.join(quality_warnings)}"
+        if use_calibrated_probability:
+            notes += "; calibrated probability used for decision"
 
         return JSONResponse(
             {
@@ -1849,15 +1914,20 @@ async def detect(
                 "is_uncertain": is_uncertain,
                 "confidence": round(confidence, 4),
                 "fake_probability": round(fake_probability, 4),
+                "fake_probability_raw": round(fake_probability_raw, 4),
+                "fake_probability_calibrated": round(fake_probability_calibrated, 4),
+                "probability_source": probability_source,
                 "threshold": round(DETECTION_FAKE_THRESHOLD, 4),
                 "threshold_profile": DETECTION_THRESHOLD_PROFILE,
                 "decision_distance": round(decision_distance, 4),
                 "uncertain_margin": round(DETECTION_UNCERTAIN_MARGIN, 4),
+                "effective_uncertain_margin": round(effective_uncertain_margin, 4),
+                "quality_margin_boost": round(quality_margin_boost, 4),
                 "model_used": detector.get("model_name", "unknown"),
                 "feature_type": feature_type,
-                "windows_analyzed": len(fake_probs),
-                "voiced_windows": seg_meta.get("voiced_windows", len(fake_probs)),
-                "total_windows": seg_meta.get("total_windows", len(fake_probs)),
+                "windows_analyzed": len(fake_probs_cal),
+                "voiced_windows": seg_meta.get("voiced_windows", len(fake_probs_cal)),
+                "total_windows": seg_meta.get("total_windows", len(fake_probs_cal)),
                 "quality_score": round(quality_score, 4),
                 "quality_warnings": quality_warnings,
                 "quality_metrics": quality_metrics,

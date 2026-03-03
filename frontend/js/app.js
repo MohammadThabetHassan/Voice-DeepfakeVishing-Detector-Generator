@@ -872,6 +872,9 @@ $('#detect-form').addEventListener('submit', async e => {
     const isFake = !isUncertain && (basePrediction === 'fake' || basePrediction === '1');
     const conf = data.confidence != null ? `${(data.confidence * 100).toFixed(1)}%` : 'N/A';
     const fakeProb = data.fake_probability != null ? `${(data.fake_probability * 100).toFixed(1)}%` : 'N/A';
+    const fakeProbRaw = data.fake_probability_raw != null ? `${(data.fake_probability_raw * 100).toFixed(1)}%` : null;
+    const fakeProbCal = data.fake_probability_calibrated != null ? `${(data.fake_probability_calibrated * 100).toFixed(1)}%` : null;
+    const probabilitySource = data.probability_source || 'raw';
     const threshold = data.threshold != null ? `${(data.threshold * 100).toFixed(1)}%` : 'N/A';
     const qualityScore = data.quality_score != null ? `${(data.quality_score * 100).toFixed(1)}%` : 'N/A';
     const qualityWarnings = Array.isArray(data.quality_warnings) ? data.quality_warnings : [];
@@ -892,8 +895,10 @@ $('#detect-form').addEventListener('submit', async e => {
       <div class="result-meta">
         Decision: ${isUncertain ? 'uncertain' : (isFake ? 'fake' : 'real')} &nbsp;|&nbsp;
         Fake probability: ${fakeProb} &nbsp;|&nbsp;
-        Threshold: ${threshold}${data.threshold_profile ? ` (${data.threshold_profile})` : ''}
+        Threshold: ${threshold}${data.threshold_profile ? ` (${data.threshold_profile})` : ''} &nbsp;|&nbsp;
+        Source: ${probabilitySource}
       </div>
+      ${(fakeProbRaw && fakeProbCal) ? `<div class="result-meta">Raw prob: ${fakeProbRaw} &nbsp;|&nbsp; Calibrated prob: ${fakeProbCal}</div>` : ''}
       <div class="result-meta">
         Model: ${data.model_used || 'unknown'} &nbsp;|&nbsp;
         Features: ${data.feature_type || 'N/A'} &nbsp;|&nbsp;
@@ -1068,6 +1073,9 @@ function saveDetectionResult(result, filename) {
     is_uncertain: isUncertain,
     confidence: result.confidence,
     fake_probability: result.fake_probability,
+    fake_probability_raw: result.fake_probability_raw,
+    fake_probability_calibrated: result.fake_probability_calibrated,
+    probability_source: result.probability_source,
     threshold: result.threshold,
     quality_score: result.quality_score,
     model_used: result.model_used || 'unknown'

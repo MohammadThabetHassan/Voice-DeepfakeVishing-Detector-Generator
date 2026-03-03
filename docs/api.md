@@ -119,6 +119,9 @@ POST /detect
   "is_uncertain": true,
   "confidence": 0.9142,
   "fake_probability": 0.9142,
+  "fake_probability_raw": 0.9011,
+  "fake_probability_calibrated": 0.9142,
+  "probability_source": "calibrated",
   "threshold": 0.8,
   "threshold_profile": "balanced",
   "decision_distance": 0.01,
@@ -128,6 +131,16 @@ POST /detect
   "windows_analyzed": 20,
   "voiced_windows": 18,
   "total_windows": 24,
+  "quality_score": 0.77,
+  "quality_warnings": ["high background noise"],
+  "quality_metrics": {
+    "duration_s": 2.1,
+    "rms": 0.021,
+    "peak": 0.94,
+    "clipping_ratio": 0.0012,
+    "voiced_ratio": 0.64,
+    "snr_proxy_db": 11.8
+  },
   "inference_time_s": 0.003,
   "notes": "Deepfake voice detected"
 }
@@ -140,6 +153,9 @@ POST /detect
 | `is_uncertain` | boolean | Whether score fell in the uncertainty band around threshold |
 | `confidence` | float | Confidence score (0.0 to 1.0) |
 | `fake_probability` | float | Estimated probability of fake class (0.0 to 1.0) |
+| `fake_probability_raw` | float | Uncalibrated fake-class probability |
+| `fake_probability_calibrated` | float | Calibrated fake-class probability |
+| `probability_source` | string | Probability used for threshold decision (`raw` or `calibrated`) |
 | `threshold` | float | Decision threshold used for fake classification |
 | `threshold_profile` | string | Active profile used for default threshold/margin |
 | `decision_distance` | float | Absolute distance between `fake_probability` and `threshold` |
@@ -149,6 +165,9 @@ POST /detect
 | `windows_analyzed` | integer | Number of windows used in aggregation |
 | `voiced_windows` | integer | Number of voiced windows detected |
 | `total_windows` | integer | Total candidate windows before selection |
+| `quality_score` | float | Audio quality score used by reliability gate (0.0 to 1.0) |
+| `quality_warnings` | string[] | Quality issues detected in input audio |
+| `quality_metrics` | object | Low-level quality metrics (rms, clipping, voiced ratio, snr proxy) |
 | `inference_time_s` | float | Inference time in seconds |
 | `notes` | string | Human-readable result description |
 

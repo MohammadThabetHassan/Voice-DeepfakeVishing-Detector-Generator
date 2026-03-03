@@ -99,8 +99,14 @@ def test_detect_valid_wav():
         assert data["base_prediction"] in ("real", "fake")
         assert "is_uncertain" in data
         assert "fake_probability" in data
+        assert "fake_probability_raw" in data
+        assert "fake_probability_calibrated" in data
+        assert "probability_source" in data
         assert "threshold" in data
         assert 0.0 <= data["fake_probability"] <= 1.0
+        assert 0.0 <= data["fake_probability_raw"] <= 1.0
+        assert 0.0 <= data["fake_probability_calibrated"] <= 1.0
+        assert data["probability_source"] in ("raw", "calibrated")
         assert "confidence" in data
         assert 0.0 <= data["confidence"] <= 1.0
         assert "quality_score" in data

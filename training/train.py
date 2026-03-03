@@ -1081,28 +1081,31 @@ def train_single(
     if "_extraction_time" in df_train.columns:
         avg_extract_ms = round(df_train["_extraction_time"].mean() * 1000, 3)
 
-    # Build classifier based on type
+    # Build classifier factory based on type
     if classifier_type == "xgboost":
-        clf = build_xgboost_classifier()
+        build_model = build_xgboost_classifier
         # XGBoost requires numeric labels (0, 1), not strings ('fake', 'real')
         # Encode: 'fake' -> 1, 'real' -> 0
         label_map = {"real": 0, "fake": 1}
         y_train_encoded = np.array([label_map.get(label, label) for label in y_train])
         pos_label = 1  # Use numeric pos_label for XGBoost (1 = fake)
     else:
-        clf = build_classifier()
+        build_model = build_classifier
         y_train_encoded = y_train
         pos_label = "fake"  # Use string pos_label for GradientBoosting
 
     # Cross-validation on training set
+    clf = build_model()
     t0 = time.perf_counter()
     cv_metrics = evaluate_model(
         clf, X_train, y_train_encoded, cv_folds=cv_folds, pos_label=pos_label
     )
     cv_time = time.perf_counter() - t0
 
-    # Train final model on all training data (with optional probability calibration).
-    model_for_inference = clf
+    # Train final model on all training data.
+    raw_model = build_model()
+    raw_model.fit(X_train, y_train_encoded)
+    model_for_inference = raw_model
     calibration_applied = False
     calibration_reason = "disabled"
     if calibration_method != "none":
@@ -1112,7 +1115,7 @@ def train_single(
         if min_class >= 2 and safe_cal_folds >= 2:
             try:
                 model_for_inference = CalibratedClassifierCV(
-                    estimator=clf,
+                    estimator=build_model(),
                     method=calibration_method,
                     cv=safe_cal_folds,
                 )
@@ -1123,16 +1126,11 @@ def train_single(
             except Exception as e:
                 calibration_reason = f"failed:{e}"
                 print(f"  [WARN] Calibration failed ({e}); using base classifier.")
-                model_for_inference = clf
-                model_for_inference.fit(X_train, y_train_encoded)
+                model_for_inference = raw_model
         else:
             calibration_reason = f"insufficient_data(min_class={min_class})"
             print("  [WARN] Skipping calibration: insufficient per-class samples.")
-            model_for_inference = clf
-            model_for_inference.fit(X_train, y_train_encoded)
-    else:
-        model_for_inference = clf
-        model_for_inference.fit(X_train, y_train_encoded)
+            model_for_inference = raw_model
 
     # Evaluate on test set if provided
     if df_test is not None:
@@ -1233,6 +1231,8 @@ def train_single(
         "is_calibrated": calibration_applied,
         "calibration_method": calibration_method if calibration_applied else "none",
         "calibration_cv_folds": calibration_cv_folds if calibration_applied else 0,
+        "raw_model": raw_model if calibration_applied else None,
+        "probability_source": "calibrated" if calibration_applied else "raw",
         "training_date_utc": trained_at,
         "training_data_hash": training_data_hash,
         "training_data_source": training_data_source,
@@ -1284,6 +1284,7 @@ def write_model_manifest(output_dir: Path, run_info: dict, best_model_name: str 
             "classifier_type": obj.get("classifier_type"),
             "is_calibrated": obj.get("is_calibrated", False),
             "calibration_method": obj.get("calibration_method", "none"),
+            "probability_source": obj.get("probability_source", "raw"),
             "feature_count": feature_count,
             "training_date_utc": obj.get("training_date_utc"),
             "training_data_hash": obj.get("training_data_hash"),
