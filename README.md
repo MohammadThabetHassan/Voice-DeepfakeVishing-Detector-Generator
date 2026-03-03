@@ -27,11 +27,11 @@ A graduation-quality research project that:
 ## New Features
 
 ### Detection
-- **Batch Detection** — Process multiple audio files in a single request
 - **Audio Preprocessing** — Optional noise reduction and loudness normalization
 - **Enhanced ML Features** — Pitch, jitter, shimmer, and delta MFCCs for improved accuracy
 - **XGBoost & Ensemble Models** — Soft voting across multiple classifiers
-- **Multiple Model Types** — MFCC-only, FFT-only, Hybrid, Enhanced (30-dim), and Ensemble
+- **Uncertain Decision Band** — Borderline scores are reported as `uncertain` instead of forced binary output
+- **Multiple Model Types** — MFCC-only, FFT-only, Hybrid, Enhanced (75-dim), and Ensemble
 
 ### Generation
 - **Coqui XTTS v2** — High-quality zero-shot voice cloning (pip installable)
@@ -64,13 +64,12 @@ A graduation-quality research project that:
 │  Live Mode: calls configurable API URL stored in localStorage       │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │ HTTPS POST /detect  /generate  /convert-voice
-                            │ POST /batch-detect  GET  /health
+                            │ GET /health
 ┌───────────────────────────▼─────────────────────────────────────────┐
 │ FastAPI Backend (local / Docker / GHCR)                             │
 │   backend/app.py  running at http://localhost:8000                  │
 │                                                                     │
-│  POST /detect        → WAV upload → { prediction, confidence, fake_probability, ... }│
-│  POST /batch-detect  → Multiple WAVs → { results[] }               │
+│  POST /detect        → WAV upload → { prediction, fake_probability, threshold, ... }│
 │  POST /generate      → speaker WAV + text → base64 WAV audio       │
 │  POST /convert-voice → source + target WAV → base64 converted      │
 │  GET  /health        → { status, model_name, tts_engine, ... }     │
@@ -81,10 +80,11 @@ A graduation-quality research project that:
 │   deepfake_detector_mfcc.pkl      — 13-dim MFCC                    │
 │   deepfake_detector_fft.pkl       — 6-dim FFT/Spectral              │
 │   deepfake_detector_hybrid.pkl    — 19-dim Hybrid                   │
-│   deepfake_detector_enhanced.pkl  — 30-dim Enhanced                 │
+│   deepfake_detector_enhanced.pkl  — 75-dim Enhanced                 │
 │   deepfake_detector_ensemble.pkl  — Soft voting ensemble            │
 │   deepfake_detector_best.pkl      — Copy of best model              │
 │   results.json                    — Metrics comparison table        │
+│   model_manifest.json             — Model IDs + data/training hash  │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │ trained by
 ┌───────────────────────────▼─────────────────────────────────────────┐
@@ -108,7 +108,7 @@ A graduation-quality research project that:
 │   └── js/app.js
 │
 ├── backend/               ← FastAPI application
-│   ├── app.py             ← Main API (detect, batch-detect, generate, convert)
+│   ├── app.py             ← Main API (detect, generate, convert)
 │   ├── requirements.txt
 │   ├── uploads/           ← Temp (git-ignored)
 │   ├── generated/         ← Temp (git-ignored)
@@ -124,7 +124,13 @@ A graduation-quality research project that:
 │
 ├── models/                ← Saved classifier models
 │   ├── deepfake_detector_*.pkl
-│   └── results.json
+│   ├── results.json
+│   └── model_manifest.json
+│
+├── scripts/
+│   ├── prepare_external_dataset.py
+│   ├── collect_web_audio.py     ← YouTube/podcast data collector
+│   └── web_sources.json         ← Source configuration template
 │
 ├── docs/                  ← Documentation
 │   ├── api.md             ← Complete API documentation
@@ -174,9 +180,13 @@ python training/train.py --data training/data/ --output models/
 # Option C: prepare and train on broader external real/fake data
 python scripts/prepare_external_dataset.py --clean --max-per-label 0
 python training/train.py --data training/data_external --output models_external/
+
+# Option D: collect web audio (YouTube + podcast RSS), then train
+python scripts/collect_web_audio.py --clean --max-youtube-per-query 8 --max-podcast-per-feed 8
+python training/train.py --data training/web_data/processed --output models_web/
 ```
 
-This creates `models/deepfake_detector_*.pkl` and `models/results.json`.
+This creates `models/deepfake_detector_*.pkl`, `models/results.json`, and `models/model_manifest.json`.
 
 See `docs/enhancements-and-threshold-tuning-2026-03-03.md` for the latest enhancement review and threshold calibration notes.
 
@@ -225,8 +235,7 @@ See [docs/api.md](docs/api.md) for complete API documentation.
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Service status, model info, TTS availability |
-| `/detect` | POST | Upload WAV → `{prediction, confidence, model_used}` |
-| `/batch-detect` | POST | Upload multiple WAVs → batch results |
+| `/detect` | POST | Upload WAV → `{prediction, fake_probability, threshold, ...}` |
 | `/generate` | POST | Upload speaker WAV + text → base64 audio |
 | `/convert-voice` | POST | Source + target WAV → converted voice |
 
@@ -241,7 +250,7 @@ See [docs/api.md](docs/api.md) for complete API documentation.
 | MFCC-only | Mel Frequency Cepstral Coefficients (mean) | 13 | ~0.89 |
 | FFT/Spectral | Centroid, bandwidth, rolloff, band energies | 6 | ~0.84 |
 | Hybrid | MFCC + FFT concatenated | 19 | ~0.92 |
-| **Enhanced** | MFCC + FFT + pitch + jitter + shimmer + delta MFCCs | **30** | **~0.94** |
+| **Enhanced** | MFCC + FFT + pitch + jitter + shimmer + delta MFCCs | **75** | **~0.94** |
 | **Ensemble** | Soft voting across multiple classifiers | Varies | **~0.95** |
 
 Run `cat models/results.json` to see actual computed metrics.
@@ -254,12 +263,6 @@ python training/train.py --csv osr_features.csv --output models/
 
 # Train on WAV directory
 python training/train.py --data training/data/ --output models/
-
-# Train specific model type
-python training/train.py --csv osr_features.csv --model-type xgboost --output models/
-
-# Train ensemble model
-python training/train.py --csv osr_features.csv --ensemble --output models/
 
 # Specify output directory and CV folds
 python training/train.py --csv osr_features.csv --output models/ --cv-folds 5
@@ -348,17 +351,21 @@ curl -X POST "http://localhost:8000/detect?apply_noise_reduction=true&apply_norm
   -F "audio=@sample.wav"
 ```
 
-### Detection Threshold Tuning
+### Detection Threshold Profiles
 
-The `/detect` decision uses `DETECTION_FAKE_THRESHOLD` (default: `0.8`).
+The backend supports threshold profiles and an uncertainty band:
 
-- Lower threshold (for example `0.7`) increases fake recall, but can increase false positives.
-- Higher threshold (for example `0.85`) reduces false positives, but can miss more fakes.
+- `DETECTION_THRESHOLD_PROFILE=balanced` (default): threshold `0.8`, uncertain margin `0.08`
+- `DETECTION_THRESHOLD_PROFILE=low_fp`: threshold `0.85`, uncertain margin `0.06`
+- `DETECTION_THRESHOLD_PROFILE=high_recall`: threshold `0.7`, uncertain margin `0.1`
 
-Run backend with an explicit threshold:
+You can still override values directly:
 
 ```bash
-DETECTION_FAKE_THRESHOLD=0.8 uvicorn backend.app:app --host 0.0.0.0 --port 8000
+DETECTION_THRESHOLD_PROFILE=low_fp \
+DETECTION_FAKE_THRESHOLD=0.85 \
+DETECTION_UNCERTAIN_MARGIN=0.06 \
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
 ---

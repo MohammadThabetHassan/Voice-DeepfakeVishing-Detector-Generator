@@ -17,7 +17,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from backend.app import app, _mfcc_features, _fft_features, _extract_legacy_18_features
+from backend.app import (
+    app,
+    _mfcc_features,
+    _fft_features,
+    _extract_enhanced_features,
+    _extract_enhanced_features_legacy30,
+    _extract_legacy_18_features,
+)
 
 client = TestClient(app)
 
@@ -55,6 +62,9 @@ def test_health_returns_ok():
     assert data["status"] == "ok"
     assert "uptime_seconds" in data
     assert "detector_loaded" in data
+    assert "threshold_profile" in data
+    assert "detection_fake_threshold" in data
+    assert "uncertain_margin" in data
 
 
 # ─── Detect ───────────────────────────────────────────────────────────────────
@@ -74,7 +84,13 @@ def test_detect_valid_wav():
     data = resp.json()
     if resp.status_code == 200:
         assert "prediction" in data
-        assert data["prediction"] in ("real", "fake")
+        assert data["prediction"] in ("real", "fake", "uncertain")
+        assert "base_prediction" in data
+        assert data["base_prediction"] in ("real", "fake")
+        assert "is_uncertain" in data
+        assert "fake_probability" in data
+        assert "threshold" in data
+        assert 0.0 <= data["fake_probability"] <= 1.0
         assert "confidence" in data
         assert 0.0 <= data["confidence"] <= 1.0
 
@@ -163,6 +179,22 @@ def test_fft_features_no_nan():
     segment = np.random.randn(16000).astype(np.float32)
     feats = _fft_features(segment, 16000)
     assert not np.any(np.isnan(feats)), "FFT features contain NaN"
+
+
+def test_enhanced_features_shape():
+    import numpy as np
+
+    segment = np.random.randn(16000).astype(np.float32)
+    feats = _extract_enhanced_features(segment, 16000)
+    assert feats.shape == (75,), f"Expected (75,), got {feats.shape}"
+
+
+def test_enhanced_legacy30_features_shape():
+    import numpy as np
+
+    segment = np.random.randn(16000).astype(np.float32)
+    feats = _extract_enhanced_features_legacy30(segment, 16000)
+    assert feats.shape == (30,), f"Expected (30,), got {feats.shape}"
 
 
 def test_mfcc_features_silent():

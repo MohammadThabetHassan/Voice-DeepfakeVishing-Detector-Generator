@@ -30,11 +30,13 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
 import time
 import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -70,6 +72,47 @@ warnings.filterwarnings("ignore")
 ROOT_DIR = Path(__file__).parent.parent.resolve()
 MODELS_DIR = ROOT_DIR / "models"
 MODELS_DIR.mkdir(exist_ok=True)
+
+THRESHOLD_PROFILES = {
+    "balanced": {"threshold": 0.8, "uncertain_margin": 0.08},
+    "low_fp": {"threshold": 0.85, "uncertain_margin": 0.06},
+    "high_recall": {"threshold": 0.7, "uncertain_margin": 0.1},
+}
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def hash_file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def hash_wav_directory_manifest(data_dir: Path) -> str:
+    """
+    Fast, reproducible directory fingerprint for training-data versioning.
+    Hashes relative path + size + light content samples for all WAV files.
+    """
+    h = hashlib.sha256()
+    wavs = sorted(list(data_dir.rglob("*.wav")) + list(data_dir.rglob("*.WAV")))
+    for path in wavs:
+        rel = path.relative_to(data_dir).as_posix()
+        st = path.stat()
+        h.update(rel.encode("utf-8"))
+        h.update(str(st.st_size).encode("utf-8"))
+        # Include a small content sample to detect same-size file replacements.
+        with path.open("rb") as f:
+            head = f.read(65536)
+            h.update(head)
+            if st.st_size > 65536:
+                f.seek(max(0, st.st_size - 65536))
+                tail = f.read(65536)
+                h.update(tail)
+    return h.hexdigest()
 
 
 # ─── feature extraction ───────────────────────────────────────────────────────
@@ -537,6 +580,19 @@ def build_xgboost_classifier():
     )
 
 
+def make_model_input(feats: np.ndarray, feat_cols: list[str] | None):
+    """Build prediction input with optional pandas DataFrame column names."""
+    arr = np.asarray(feats, dtype=np.float64).reshape(1, -1)
+    if feat_cols:
+        try:
+            import pandas as pd
+
+            return pd.DataFrame(arr, columns=feat_cols)
+        except Exception:
+            return arr
+    return arr
+
+
 class VotingEnsemble:
     """
     Voting ensemble classifier that combines predictions from multiple models.
@@ -572,9 +628,7 @@ class VotingEnsemble:
                 raise ValueError(f"Missing features for model type: {feature_type}")
 
             feats = X_dict[feature_type]
-            import pandas as pd
-
-            df = pd.DataFrame([feats], columns=feat_cols) if feat_cols else pd.DataFrame([feats])
+            df = make_model_input(feats, feat_cols)
             pred = model.predict(df)[0]
             # Normalize prediction to 0/1
             if str(pred) in ("1", "fake", "deepfake"):
@@ -608,9 +662,7 @@ class VotingEnsemble:
                 continue
 
             feats = X_dict[feature_type]
-            import pandas as pd
-
-            df = pd.DataFrame([feats], columns=feat_cols) if feat_cols else pd.DataFrame([feats])
+            df = make_model_input(feats, feat_cols)
 
             if hasattr(model, "predict_proba"):
                 proba = model.predict_proba(df)[0]
@@ -664,6 +716,9 @@ def train_ensemble(
     dfs: dict = None,
     voting: str = "soft",
     custom_weights: list = None,
+    training_data_hash: str | None = None,
+    training_date_utc: str | None = None,
+    training_data_source: str | None = None,
 ):
     """
     Load individual models and create an ensemble.
@@ -772,10 +827,15 @@ def train_ensemble(
 
     model_name = "deepfake_detector_ensemble"
     model_path = output_dir / f"{model_name}.pkl"
+    trained_at = training_date_utc or utc_now_iso()
+    model_id = hashlib.sha1(
+        f"{model_name}|{trained_at}|{training_data_hash or 'unknown'}".encode("utf-8")
+    ).hexdigest()[:16]
 
     # Store ensemble and component models
     ensemble_obj = {
         "model": ensemble,
+        "model_id": model_id,
         "models": models,
         "model_name": model_name,
         "feature_type": "ensemble",
@@ -784,6 +844,10 @@ def train_ensemble(
         "metrics": metrics,
         "voting": voting,
         "weights": custom_weights if custom_weights else [1.0 / len(models)] * len(models),
+        "training_date_utc": trained_at,
+        "training_data_hash": training_data_hash,
+        "training_data_source": training_data_source,
+        "recommended_threshold_profiles": THRESHOLD_PROFILES,
     }
     joblib.dump(ensemble_obj, model_path)
     print(f"  Saved: {model_path}")
@@ -827,6 +891,9 @@ def train_single(
     output_dir: Path,
     classifier_type: str = "gradient_boosting",
     df_test: pd.DataFrame = None,
+    training_data_hash: str | None = None,
+    training_date_utc: str | None = None,
+    training_data_source: str | None = None,
 ):
     """Train one model variant on df_train, evaluate on df_test. Returns (metrics_dict, model_path)."""
     # Identify feature columns
@@ -924,19 +991,99 @@ def train_single(
     suffix = "" if classifier_type == "gradient_boosting" else "_xgboost"
     model_name = f"deepfake_detector_{feature_type}{suffix}"
     model_path = output_dir / f"{model_name}.pkl"
+    trained_at = training_date_utc or utc_now_iso()
+    model_id = hashlib.sha1(
+        f"{model_name}|{trained_at}|{training_data_hash or 'unknown'}".encode("utf-8")
+    ).hexdigest()[:16]
+
     model_obj = {
         "model": clf,
+        "model_id": model_id,
         "model_name": model_name,
         "feature_type": feature_type,
         "classifier_type": classifier_type,
         "feature_columns": feat_cols,
         "metrics": metrics,
+        "training_date_utc": trained_at,
+        "training_data_hash": training_data_hash,
+        "training_data_source": training_data_source,
+        "recommended_threshold_profiles": THRESHOLD_PROFILES,
+        "feature_schema_version": 2 if feature_type == "enhanced" else 1,
+        "train_samples": int(len(df_train)),
+        "test_samples": int(len(df_test)) if df_test is not None else 0,
+        "train_label_distribution": df_train["label"].value_counts().to_dict(),
     }
     joblib.dump(model_obj, model_path)
     print(f"  Saved: {model_path}")
     print(f"  CV F1={metrics['f1']:.4f}  CV Acc={metrics['accuracy']:.4f}")
 
     return metrics, model_path
+
+
+def write_model_manifest(output_dir: Path, run_info: dict, best_model_name: str | None = None) -> Path:
+    """Build and save a consolidated model manifest for traceable deployment."""
+    manifest = {
+        "manifest_version": 1,
+        "generated_at_utc": utc_now_iso(),
+        "run": run_info,
+        "models": [],
+        "best_model_name": best_model_name,
+    }
+
+    model_paths = sorted(output_dir.glob("deepfake_detector_*.pkl"))
+    for model_path in model_paths:
+        if model_path.name.endswith("_best.pkl"):
+            # Alias copy of an already-listed model artifact.
+            continue
+
+        try:
+            obj = joblib.load(model_path)
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+
+        metrics = obj.get("metrics", {}) or {}
+        feature_columns = obj.get("feature_columns")
+        feature_count = len(feature_columns) if isinstance(feature_columns, list) else None
+
+        entry = {
+            "model_name": obj.get("model_name", model_path.stem),
+            "model_id": obj.get("model_id"),
+            "path": model_path.name,
+            "feature_type": obj.get("feature_type"),
+            "classifier_type": obj.get("classifier_type"),
+            "feature_count": feature_count,
+            "training_date_utc": obj.get("training_date_utc"),
+            "training_data_hash": obj.get("training_data_hash"),
+            "metrics": {
+                "f1": metrics.get("f1"),
+                "test_f1": metrics.get("test_f1"),
+                "accuracy": metrics.get("accuracy"),
+                "test_accuracy": metrics.get("test_accuracy"),
+            },
+        }
+        if obj.get("feature_type") == "ensemble":
+            components = obj.get("models", [])
+            entry["ensemble_components"] = [m.get("model_name", "unknown") for m in components]
+            entry["voting"] = obj.get("voting")
+
+        manifest["models"].append(entry)
+
+    if manifest["models"] and not manifest["best_model_name"]:
+        best = max(
+            manifest["models"],
+            key=lambda m: (
+                -1 if m["metrics"].get("test_f1") is None else m["metrics"]["test_f1"],
+                -1 if m["metrics"].get("f1") is None else m["metrics"]["f1"],
+            ),
+        )
+        manifest["best_model_name"] = best["model_name"]
+
+    manifest_path = output_dir / "model_manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    return manifest_path
 
 
 # ─── main ─────────────────────────────────────────────────────────────────────
@@ -964,6 +1111,9 @@ def main():
     print("=" * 60)
 
     all_results = {}
+    training_date_utc = utc_now_iso()
+    training_data_source = None
+    training_data_hash = None
 
     def train_both_classifiers(df: pd.DataFrame, ft: str, output_dir: Path, test_size: float = 0.2):
         """Train both GBM and XGBoost variants with train/test split, return results dict and best path."""
@@ -981,7 +1131,14 @@ def main():
 
         # Train Gradient Boosting (GBM)
         metrics_gbm, path_gbm = train_single(
-            df_train, ft, output_dir, classifier_type="gradient_boosting", df_test=df_test
+            df_train,
+            ft,
+            output_dir,
+            classifier_type="gradient_boosting",
+            df_test=df_test,
+            training_data_hash=training_data_hash,
+            training_date_utc=training_date_utc,
+            training_data_source=training_data_source,
         )
         if metrics_gbm:
             results[f"{ft}_gbm"] = metrics_gbm
@@ -993,7 +1150,14 @@ def main():
 
         # Train XGBoost
         metrics_xgb, path_xgb = train_single(
-            df_train, ft, output_dir, classifier_type="xgboost", df_test=df_test
+            df_train,
+            ft,
+            output_dir,
+            classifier_type="xgboost",
+            df_test=df_test,
+            training_data_hash=training_data_hash,
+            training_date_utc=training_date_utc,
+            training_data_source=training_data_source,
         )
         if metrics_xgb:
             results[f"{ft}_xgboost"] = metrics_xgb
@@ -1006,7 +1170,10 @@ def main():
 
     if args.data:
         data_dir = args.data.resolve()
+        training_data_source = str(data_dir)
+        training_data_hash = hash_wav_directory_manifest(data_dir)
         print(f"\nLoading WAV files from: {data_dir}")
+        print(f"Data hash: {training_data_hash[:16]}...")
         dfs = load_from_directory(data_dir, seg_duration=args.seg_duration)
 
         if not dfs:
@@ -1029,7 +1196,10 @@ def main():
 
     elif args.csv:
         csv_path = args.csv.resolve()
+        training_data_source = str(csv_path)
+        training_data_hash = hash_file_sha256(csv_path)
         print(f"\nLoading CSV: {csv_path}")
+        print(f"Data hash: {training_data_hash[:16]}...")
         ft, df = load_from_csv(csv_path)
         print(f"  Detected feature type: {ft} | Rows: {len(df)}")
 
@@ -1116,7 +1286,10 @@ def main():
             sys.exit(1)
 
         if found.is_dir():
+            training_data_source = str(found.resolve())
+            training_data_hash = hash_wav_directory_manifest(found.resolve())
             print(f"\nLoading WAV files from default: {found}")
+            print(f"Data hash: {training_data_hash[:16]}...")
             dfs = load_from_directory(found)
             best_f1 = -1
             best_path = None
@@ -1130,7 +1303,10 @@ def main():
                         best_f1 = ft_best_f1
                         best_path = ft_best_path
         else:
+            training_data_source = str(found.resolve())
+            training_data_hash = hash_file_sha256(found.resolve())
             print(f"\nLoading CSV from default: {found}")
+            print(f"Data hash: {training_data_hash[:16]}...")
             ft, df = load_from_csv(found)
             ft_results, ft_best_path, ft_best_f1 = train_both_classifiers(df, ft, output_dir)
             all_results.update(ft_results)
@@ -1160,6 +1336,9 @@ def main():
                 output_dir,
                 dfs=dfs if "dfs" in locals() else None,
                 voting="soft",
+                training_data_hash=training_data_hash,
+                training_date_utc=training_date_utc,
+                training_data_source=training_data_source,
             )
     else:
         # For CSV data, look for available models
@@ -1175,6 +1354,9 @@ def main():
                 output_dir,
                 dfs=dfs if "dfs" in locals() else None,
                 voting="soft",
+                training_data_hash=training_data_hash,
+                training_date_utc=training_date_utc,
+                training_data_source=training_data_source,
             )
 
     # Save results table
@@ -1182,6 +1364,25 @@ def main():
     with open(results_path, "w") as f:
         json.dump(all_results, f, indent=2)
     print(f"\nResults saved: {results_path}")
+
+    run_info = {
+        "training_date_utc": training_date_utc,
+        "training_data_source": training_data_source,
+        "training_data_hash": training_data_hash,
+        "args": {
+            "data": str(args.data) if args.data else None,
+            "csv": str(args.csv) if args.csv else None,
+            "output": str(args.output),
+            "cv_folds": args.cv_folds,
+            "seg_duration": args.seg_duration,
+        },
+    }
+    manifest_path = write_model_manifest(
+        output_dir,
+        run_info=run_info,
+        best_model_name=best_path.stem if best_path is not None else None,
+    )
+    print(f"Model manifest saved: {manifest_path}")
 
     # Print comparison table
     print("\n" + "=" * 70)

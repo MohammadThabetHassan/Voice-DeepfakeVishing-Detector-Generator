@@ -36,6 +36,7 @@ generated/
 # Training data (large audio files)
 training/data/
 training/data_external/
+training/web_data/
 data/
 
 # TTS model cache (large)

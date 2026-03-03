@@ -1,0 +1,21 @@
+{
+  "real": {
+    "youtube_queries": [
+      "real human podcast interview english",
+      "real customer support phone call recording"
+    ],
+    "youtube_urls": [],
+    "podcast_feeds": [
+      "https://feeds.npr.org/510289/podcast.xml",
+      "https://feeds.simplecast.com/54nAGcIl"
+    ]
+  },
+  "fake": {
+    "youtube_queries": [
+      "ai voice clone demo",
+      "text to speech comparison"
+    ],
+    "youtube_urls": [],
+    "podcast_feeds": []
+  }
+}

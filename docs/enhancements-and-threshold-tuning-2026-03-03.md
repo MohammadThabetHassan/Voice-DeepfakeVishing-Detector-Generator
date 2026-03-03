@@ -74,3 +74,30 @@ With the deployed retrained hybrid model and default threshold `0.8`:
 - `generated_voice(1).wav` -> fake
 - `YTDown...online-video-cutter...(1).wav` -> real
 
+## Additional Engineering Updates (March 3, 2026)
+
+Implemented after this review:
+
+1. Web data collection pipeline
+   - Added `scripts/collect_web_audio.py` to collect labeled real/fake audio from:
+     - YouTube search queries and direct URLs (via `yt-dlp`)
+     - Podcast RSS feeds (episode enclosure downloads)
+   - Normalizes to mono 16 kHz WAV and exports `training/web_data/metadata.csv`.
+
+2. Feature-schema consistency fix
+   - Fixed backend enhanced inference schema to match training (`75` dims).
+   - Kept backward compatibility for legacy `30`-dim enhanced artifacts.
+
+3. Uncertainty-aware detection output
+   - `/detect` now returns:
+     - `prediction`: `real` / `fake` / `uncertain`
+     - `base_prediction`, `is_uncertain`, `fake_probability`, `threshold`, `uncertain_margin`
+
+4. Model manifest/versioning
+   - Training now stores metadata in each model artifact:
+     - `model_id`, `training_date_utc`, `training_data_hash`, `recommended_threshold_profiles`
+   - Added `models/model_manifest.json` as a consolidated run manifest.
+
+5. Backend schema validation
+   - Added strict model schema checks at load time (`DETECTION_STRICT_SCHEMA_CHECK=true` by default).
+   - Prevents loading artifacts with incompatible feature dimensions/order.

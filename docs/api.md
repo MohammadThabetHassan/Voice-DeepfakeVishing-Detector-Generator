@@ -48,6 +48,21 @@ GET /health
     "ensemble_models": ["deepfake_detector_mfcc", "deepfake_detector_fft", "deepfake_detector_hybrid"],
     "voting": "soft"
   },
+  "model_manifest": {
+    "model_id": "b18f99bc96868d97",
+    "training_date_utc": "2026-03-03T08:30:12+00:00",
+    "training_data_hash": "5fa2...",
+    "classifier_type": "ensemble",
+    "feature_type": "ensemble",
+    "recommended_threshold_profiles": {
+      "balanced": {"threshold": 0.8, "uncertain_margin": 0.08},
+      "low_fp": {"threshold": 0.85, "uncertain_margin": 0.06},
+      "high_recall": {"threshold": 0.7, "uncertain_margin": 0.1}
+    }
+  },
+  "threshold_profile": "balanced",
+  "detection_fake_threshold": 0.8,
+  "uncertain_margin": 0.08,
   "tts_engine": "xtts_v2",
   "xtts_v2_available": true,
   "indextts2_available": false,
@@ -64,6 +79,10 @@ GET /health
 | `model_name` | string | Name of loaded detection model |
 | `model_type` | string | Feature type (`mfcc`, `fft`, `hybrid`, `enhanced`, `ensemble`) |
 | `ensemble_info` | object\|null | Ensemble configuration if applicable |
+| `model_manifest` | object\|null | Model metadata (`model_id`, training hash/date, schema hints) |
+| `threshold_profile` | string | Active threshold profile (`balanced`, `low_fp`, `high_recall`) |
+| `detection_fake_threshold` | float | Active fake-class decision threshold |
+| `uncertain_margin` | float | Margin around threshold where result becomes uncertain |
 | `tts_engine` | string | Available TTS engine (`xtts_v2`, `indextts2`, `gtts_fallback`, `none`) |
 | `xtts_v2_available` | boolean | Whether XTTS v2 is available |
 | `indextts2_available` | boolean | Whether IndexTTS2 is available |
@@ -95,10 +114,15 @@ POST /detect
 **Response** (200 OK):
 ```json
 {
-  "prediction": "fake",
+  "prediction": "uncertain",
+  "base_prediction": "fake",
+  "is_uncertain": true,
   "confidence": 0.9142,
   "fake_probability": 0.9142,
   "threshold": 0.8,
+  "threshold_profile": "balanced",
+  "decision_distance": 0.01,
+  "uncertain_margin": 0.08,
   "model_used": "deepfake_detector_ensemble",
   "feature_type": "ensemble",
   "windows_analyzed": 20,
@@ -111,10 +135,15 @@ POST /detect
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `prediction` | string | Classification result (`real` or `fake`) |
+| `prediction` | string | Final decision (`real`, `fake`, or `uncertain`) |
+| `base_prediction` | string | Raw class decision before uncertainty handling (`real` or `fake`) |
+| `is_uncertain` | boolean | Whether score fell in the uncertainty band around threshold |
 | `confidence` | float | Confidence score (0.0 to 1.0) |
 | `fake_probability` | float | Estimated probability of fake class (0.0 to 1.0) |
 | `threshold` | float | Decision threshold used for fake classification |
+| `threshold_profile` | string | Active profile used for default threshold/margin |
+| `decision_distance` | float | Absolute distance between `fake_probability` and `threshold` |
+| `uncertain_margin` | float | Uncertainty margin used around threshold |
 | `model_used` | string | Name of the model used for inference |
 | `feature_type` | string | Feature extraction type used |
 | `windows_analyzed` | integer | Number of windows used in aggregation |
@@ -128,75 +157,6 @@ POST /detect
 curl -X POST "http://localhost:8000/detect?apply_noise_reduction=true" \
   -F "audio=@sample.wav"
 ```
-
----
-
-### Batch Detect
-
-Analyze multiple audio files in a single request.
-
-```http
-POST /batch-detect
-```
-
-**Request Body** (`multipart/form-data`):
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `audio` | File[] | Yes | Multiple audio files (array) |
-
-**Response** (200 OK):
-```json
-{
-  "results": [
-    {
-      "filename": "sample1.wav",
-      "prediction": "fake",
-      "confidence": 0.9142,
-      "model_used": "deepfake_detector_ensemble",
-      "feature_type": "ensemble",
-      "inference_time_s": 0.003,
-      "status": "success",
-      "error_message": null
-    },
-    {
-      "filename": "sample2.wav",
-      "prediction": "real",
-      "confidence": 0.8234,
-      "model_used": "deepfake_detector_ensemble",
-      "feature_type": "ensemble",
-      "inference_time_s": 0.002,
-      "status": "success",
-      "error_message": null
-    }
-  ],
-  "total_files": 2,
-  "successful": 2,
-  "failed": 0
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `results` | array | Array of detection results |
-| `results[].filename` | string | Original filename |
-| `results[].prediction` | string\|null | Classification result or null if failed |
-| `results[].confidence` | float\|null | Confidence score or null if failed |
-| `results[].status` | string | Processing status (`success` or `error`) |
-| `results[].error_message` | string\|null | Error message if failed |
-| `total_files` | integer | Total number of files submitted |
-| `successful` | integer | Number of successfully processed files |
-| `failed` | integer | Number of failed files |
-
-**Example**:
-```bash
-curl -X POST "http://localhost:8000/batch-detect" \
-  -F "audio=@sample1.wav" \
-  -F "audio=@sample2.wav" \
-  -F "audio=@sample3.wav"
-```
-
----
 
 ### Generate Voice
 
@@ -388,13 +348,12 @@ All errors follow this format:
 
 ## Rate Limiting
 
-The API currently does not implement rate limiting. For production deployments, recommended limits:
+Current defaults (env-overridable in `backend/app.py`):
 
 | Endpoint | Recommended Limit |
 |----------|-------------------|
 | `/health` | 60 requests/minute |
 | `/detect` | 30 requests/minute |
-| `/batch-detect` | 10 requests/minute (max 50 files/batch) |
 | `/generate` | 10 requests/minute |
 | `/convert-voice` | 10 requests/minute |
 
@@ -405,7 +364,6 @@ The API currently does not implement rate limiting. For production deployments, 
 | Endpoint | Max File Size | Notes |
 |----------|---------------|-------|
 | `/detect` | 10 MB | Audio file |
-| `/batch-detect` | 50 MB total | All files combined |
 | `/generate` | 10 MB | Speaker reference audio |
 | `/convert-voice` | 10 MB per file | Both source and target |
 
@@ -460,15 +418,6 @@ def detect_audio(file_path: str, noise_reduction: bool = False) -> dict:
         response.raise_for_status()
         return response.json()
 
-def batch_detect(file_paths: list[str]) -> dict:
-    """Detect multiple audio files."""
-    files = [("audio", open(fp, "rb")) for fp in file_paths]
-    response = requests.post(f"{API_URL}/batch-detect", files=files)
-    for _, f in files:
-        f.close()
-    response.raise_for_status()
-    return response.json()
-
 def generate_voice(speaker_path: str, text: str, language: str = "en") -> bytes:
     """Generate voice clone and return audio bytes."""
     with open(speaker_path, "rb") as f:
@@ -517,8 +466,13 @@ if __name__ == "__main__":
 const API_URL = "http://localhost:8000";
 
 interface DetectResponse {
-  prediction: "real" | "fake";
+  prediction: "real" | "fake" | "uncertain";
+  base_prediction: "real" | "fake";
+  is_uncertain: boolean;
   confidence: number;
+  fake_probability: number;
+  threshold: number;
+  threshold_profile: "balanced" | "low_fp" | "high_recall";
   model_used: string;
   feature_type: string;
   inference_time_s: number;
@@ -558,19 +512,6 @@ async function detectAudio(
     throw new Error(error.detail || "Detection failed");
   }
   
-  return response.json();
-}
-
-async function batchDetect(files: File[]): Promise<{ results: DetectResponse[] }> {
-  const formData = new FormData();
-  files.forEach(file => formData.append("audio", file));
-  
-  const response = await fetch(`${API_URL}/batch-detect`, {
-    method: "POST",
-    body: formData
-  });
-  
-  if (!response.ok) throw new Error("Batch detection failed");
   return response.json();
 }
 

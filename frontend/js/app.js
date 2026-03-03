@@ -241,7 +241,8 @@ function setResult(containerId, html, type = 'info') {
     'success': 'Success',
     'error': 'Error',
     'real': 'Real voice detected',
-    'fake': 'Deepfake detected'
+    'fake': 'Deepfake detected',
+    'uncertain': 'Detection uncertain'
   };
   const label = typeLabels[type] || 'Result';
 
@@ -865,17 +866,36 @@ $('#detect-form').addEventListener('submit', async e => {
       return;
     }
 
-    const isFake = data.prediction === 'fake' || data.prediction === '1' || data.prediction === 1;
-    const conf   = data.confidence != null ? `${(data.confidence * 100).toFixed(1)}%` : 'N/A';
-    const type   = isFake ? 'fake' : 'real';
-    const label  = isFake ? '⚠ Deepfake Detected' : '✓ Real Voice';
+    const prediction = String(data.prediction ?? '').toLowerCase();
+    const basePrediction = String(data.base_prediction ?? data.prediction ?? '').toLowerCase();
+    const isUncertain = Boolean(data.is_uncertain) || prediction === 'uncertain';
+    const isFake = !isUncertain && (basePrediction === 'fake' || basePrediction === '1');
+    const conf = data.confidence != null ? `${(data.confidence * 100).toFixed(1)}%` : 'N/A';
+    const fakeProb = data.fake_probability != null ? `${(data.fake_probability * 100).toFixed(1)}%` : 'N/A';
+    const threshold = data.threshold != null ? `${(data.threshold * 100).toFixed(1)}%` : 'N/A';
+
+    let type = 'real';
+    let label = '✓ Real Voice';
+    if (isUncertain) {
+      type = 'uncertain';
+      label = '⚖ Uncertain Result';
+    } else if (isFake) {
+      type = 'fake';
+      label = '⚠ Deepfake Detected';
+    }
 
     setResult('detect-result', `
       <div class="result-label">${label}</div>
       <div class="result-confidence">Confidence: <strong>${conf}</strong></div>
       <div class="result-meta">
+        Decision: ${isUncertain ? 'uncertain' : (isFake ? 'fake' : 'real')} &nbsp;|&nbsp;
+        Fake probability: ${fakeProb} &nbsp;|&nbsp;
+        Threshold: ${threshold}${data.threshold_profile ? ` (${data.threshold_profile})` : ''}
+      </div>
+      <div class="result-meta">
         Model: ${data.model_used || 'unknown'} &nbsp;|&nbsp;
         Features: ${data.feature_type || 'N/A'} &nbsp;|&nbsp;
+        Windows: ${data.windows_analyzed ?? 'N/A'} &nbsp;|&nbsp;
         Inference: ${data.inference_time_s != null ? data.inference_time_s + 's' : 'N/A'}
       </div>
       ${data.notes ? `<p style="margin-top:.5rem;font-size:.85rem;">${data.notes}</p>` : ''}
@@ -884,9 +904,11 @@ $('#detect-form').addEventListener('submit', async e => {
     saveDetectionResult(data, file.name);
 
     // Additional screen reader announcement for the result
-    const resultMsg = isFake
-      ? `Deepfake detected with ${conf} confidence`
-      : `Real voice detected with ${conf} confidence`;
+    const resultMsg = isUncertain
+      ? `Detection is uncertain with ${conf} confidence. Manual review recommended.`
+      : isFake
+        ? `Deepfake detected with ${conf} confidence`
+        : `Real voice detected with ${conf} confidence`;
     announceToScreenReader(resultMsg, 'assertive');
 
   } catch (err) {
@@ -1030,11 +1052,18 @@ function formatTimestamp(date) {
 
 function saveDetectionResult(result, filename) {
   const history = loadHistory();
+  const prediction = String(result.prediction ?? '').toLowerCase();
+  const basePrediction = String(result.base_prediction ?? result.prediction ?? '').toLowerCase();
+  const isUncertain = Boolean(result.is_uncertain) || prediction === 'uncertain';
   const entry = {
     timestamp: Date.now(),
     filename: filename || 'Unknown',
-    prediction: result.prediction,
+    prediction: isUncertain ? 'uncertain' : basePrediction,
+    base_prediction: basePrediction,
+    is_uncertain: isUncertain,
     confidence: result.confidence,
+    fake_probability: result.fake_probability,
+    threshold: result.threshold,
     model_used: result.model_used || 'unknown'
   };
 
@@ -1075,17 +1104,22 @@ function renderHistory() {
   }
 
   container.innerHTML = history.map(item => {
-    const isFake = item.prediction === 'fake' || item.prediction === '1' || item.prediction === 1;
-    const badgeClass = isFake ? 'fake' : 'real';
-    const badgeText = isFake ? 'Deepfake' : 'Real';
+    const pred = String(item.prediction ?? '').toLowerCase();
+    const isUncertain = Boolean(item.is_uncertain) || pred === 'uncertain';
+    const isFake = !isUncertain && (pred === 'fake' || pred === '1');
+    const badgeClass = isUncertain ? 'uncertain' : (isFake ? 'fake' : 'real');
+    const badgeText = isUncertain ? 'Uncertain' : (isFake ? 'Deepfake' : 'Real');
     const confidence = item.confidence != null ? `${(item.confidence * 100).toFixed(1)}%` : 'N/A';
+    const fakeProb = item.fake_probability != null ? `${(item.fake_probability * 100).toFixed(1)}%` : null;
+    const threshold = item.threshold != null ? `${(item.threshold * 100).toFixed(1)}%` : null;
+    const scoreText = fakeProb && threshold ? `${fakeProb} / th ${threshold}` : confidence;
 
     return `
       <div class="history-item">
         <span class="history-timestamp">${formatTimestamp(item.timestamp)}</span>
         <span class="history-filename" title="${item.filename}">${item.filename}</span>
         <span class="history-badge ${badgeClass}">${badgeText}</span>
-        <span class="history-confidence">${confidence}</span>
+        <span class="history-confidence">${scoreText}</span>
         <span class="history-model">${item.model_used}</span>
       </div>
     `;

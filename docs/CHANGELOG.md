@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Delta and delta-delta MFCCs (first and second derivatives)
 - **XGBoost Classifier Support** — Alternative to GradientBoosting with better performance on enhanced features
 - **Ensemble Models** — Soft voting across multiple classifiers (MFCC, FFT, Hybrid) with cross-validation weighted predictions
+- **Uncertainty-Aware Output** — `/detect` now returns `prediction=uncertain` when score is near threshold, plus `base_prediction`, `fake_probability`, `threshold`, and `decision_distance`
+- **Threshold Profiles** — Added `DETECTION_THRESHOLD_PROFILE` presets: `balanced`, `low_fp`, `high_recall`
+
+#### Data Pipeline
+- **Web Audio Collector Script** — Added `scripts/collect_web_audio.py` for YouTube + podcast RSS ingestion into labeled training data
+- **Config Template** — Added `scripts/web_sources.json` for customizable source lists
+- **Model Manifesting** — Training now writes `model_manifest.json` and embeds `model_id`, `training_data_hash`, and `training_date_utc` in model artifacts
 
 #### Audio Preprocessing
 - **Noise Reduction** — Optional spectral gating via `noisereduce` library
@@ -58,12 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `xtts_v2_available` flag
 - **Model Loading Priority** — Now checks for ensemble → hybrid → best → mfcc models
 - **Documentation** — Complete rewrite with new features and API reference
+- **Enhanced Feature Schema** — Standardized on 75-dim enhanced features across training and backend inference
 
 ### Fixed
 
 - Audio format conversion edge cases with WebM/Opus browser recordings
 - Proper cleanup of temporary files after batch processing
 - Error handling in batch detection (partial failures don't abort entire batch)
+- Backend false-positive regression caused by enhanced feature-schema mismatch (30 vs 75 dims)
 
 ---
 

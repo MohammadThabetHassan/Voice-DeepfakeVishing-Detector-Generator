@@ -108,13 +108,42 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Default tuned for lower false-positive rate on broader external dataset.
-DETECTION_FAKE_THRESHOLD = _env_float("DETECTION_FAKE_THRESHOLD", 0.8)
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    value_norm = value.strip().lower()
+    if value_norm in ("1", "true", "yes", "on"):
+        return True
+    if value_norm in ("0", "false", "no", "off"):
+        return False
+    log.warning(f"Invalid {name}={value!r}; using default {default}")
+    return default
+
+
+DETECTION_THRESHOLD_PROFILES = {
+    "balanced": {"threshold": 0.8, "uncertain_margin": 0.08},
+    "low_fp": {"threshold": 0.85, "uncertain_margin": 0.06},
+    "high_recall": {"threshold": 0.7, "uncertain_margin": 0.1},
+}
+DETECTION_THRESHOLD_PROFILE = os.environ.get("DETECTION_THRESHOLD_PROFILE", "balanced").strip().lower()
+if DETECTION_THRESHOLD_PROFILE not in DETECTION_THRESHOLD_PROFILES:
+    log.warning(
+        "Invalid DETECTION_THRESHOLD_PROFILE=%r; using 'balanced'", DETECTION_THRESHOLD_PROFILE
+    )
+    DETECTION_THRESHOLD_PROFILE = "balanced"
+_profile_defaults = DETECTION_THRESHOLD_PROFILES[DETECTION_THRESHOLD_PROFILE]
+
+# Tuned defaults for lower false-positive rate on broader external datasets.
+DETECTION_FAKE_THRESHOLD = _env_float("DETECTION_FAKE_THRESHOLD", _profile_defaults["threshold"])
 DETECTION_WINDOW_SECONDS = _env_float("DETECTION_WINDOW_SECONDS", 1.0)
 DETECTION_HOP_SECONDS = _env_float("DETECTION_HOP_SECONDS", 0.5)
 DETECTION_MAX_WINDOWS = _env_int("DETECTION_MAX_WINDOWS", 20)
 DETECTION_MIN_RMS = _env_float("DETECTION_MIN_RMS", 0.01)
-DETECTION_UNCERTAIN_MARGIN = _env_float("DETECTION_UNCERTAIN_MARGIN", 0.08)
+DETECTION_UNCERTAIN_MARGIN = _env_float(
+    "DETECTION_UNCERTAIN_MARGIN", _profile_defaults["uncertain_margin"]
+)
+DETECTION_STRICT_SCHEMA_CHECK = _env_bool("DETECTION_STRICT_SCHEMA_CHECK", True)
 
 # ─── rate limiter ─────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
@@ -152,6 +181,7 @@ _indextts2_available = False
 _gtts_available = False
 _coqui_tts_available = False  # Coqui TTS for voice conversion
 _START_TIME = time.time()
+_pandas_warning_emitted = False
 
 # Path where the user cloned index-tts (configurable via env var)
 INDEXTTS_DIR = Path(os.environ.get("INDEXTTS_DIR", "/opt/index-tts"))
@@ -159,6 +189,100 @@ INDEXTTS_CHECKPOINTS = INDEXTTS_DIR / "checkpoints"
 
 
 # ─── detector loading ─────────────────────────────────────────────────────────
+
+_MODEL_EXPECTED_FEATURE_COLS = {
+    "mfcc": [f"MFCC{i + 1}" for i in range(13)],
+    "fft": ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"],
+    "hybrid": (
+        [f"MFCC{i + 1}" for i in range(13)]
+        + ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"]
+    ),
+    "enhanced": (
+        [f"MFCC{i + 1}" for i in range(13)]
+        + ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"]
+        + ["pitch_mean", "pitch_std", "jitter", "shimmer"]
+        + [f"delta_mfcc{i + 1}_mean" for i in range(13)]
+        + [f"delta_mfcc{i + 1}_std" for i in range(13)]
+        + [f"delta2_mfcc{i + 1}_mean" for i in range(13)]
+        + [f"delta2_mfcc{i + 1}_std" for i in range(13)]
+    ),
+}
+
+
+def _normalize_feature_type(feature_type: str | None) -> str:
+    if not feature_type:
+        return "hybrid"
+    ft = str(feature_type).strip().lower()
+    if ft == "mfcc_hybrid":
+        return "hybrid"
+    return ft
+
+
+def _allowed_feature_lengths(feature_type: str) -> set[int]:
+    if feature_type == "mfcc":
+        return {13}
+    if feature_type == "fft":
+        return {6}
+    if feature_type == "hybrid":
+        # 19-dim current schema, 18-dim legacy schema.
+        return {19, 18}
+    if feature_type == "enhanced":
+        # 75-dim current schema, 30-dim legacy schema.
+        return {75, 30}
+    return set()
+
+
+def _validate_detector_schema(model_obj: dict, context: str) -> str | None:
+    if not isinstance(model_obj, dict):
+        return f"{context}: model artifact must be a dict"
+    if "model" not in model_obj:
+        return f"{context}: missing 'model' key"
+
+    model = model_obj["model"]
+    if not hasattr(model, "predict"):
+        return f"{context}: model object does not implement predict()"
+
+    feature_type_raw = model_obj.get("feature_type", "hybrid")
+    feature_type = _normalize_feature_type(feature_type_raw)
+
+    if feature_type == "ensemble":
+        components = model_obj.get("models", [])
+        if not isinstance(components, list) or len(components) < 2:
+            return f"{context}: ensemble must include at least 2 component models"
+        for idx, component in enumerate(components):
+            err = _validate_detector_schema(component, f"{context}.models[{idx}]")
+            if err:
+                return err
+        return None
+
+    allowed_lengths = _allowed_feature_lengths(feature_type)
+    if not allowed_lengths:
+        return f"{context}: unsupported feature_type={feature_type_raw!r}"
+
+    feature_columns = model_obj.get("feature_columns")
+    if feature_columns is not None:
+        if not isinstance(feature_columns, list) or not feature_columns:
+            return f"{context}: feature_columns must be a non-empty list when present"
+        n_features = len(feature_columns)
+        if n_features not in allowed_lengths:
+            return (
+                f"{context}: feature_columns length {n_features} does not match "
+                f"expected {sorted(allowed_lengths)} for feature_type={feature_type}"
+            )
+
+        # Enforce canonical schema names on current-generation artifacts.
+        expected = _MODEL_EXPECTED_FEATURE_COLS.get(feature_type)
+        if expected and n_features == len(expected) and feature_columns != expected:
+            return (
+                f"{context}: feature schema mismatch for {feature_type} model "
+                "(column order/names differ from canonical schema)"
+            )
+    else:
+        # Legacy wrappers without explicit schema are only accepted for hybrid models.
+        if feature_type not in ("hybrid", "mfcc_hybrid"):
+            return f"{context}: feature_columns missing for non-hybrid model"
+
+    return None
 
 
 def _load_detector():
@@ -184,17 +308,29 @@ def _load_detector():
                 log.info(f"Loading detector: {path}")
                 obj = joblib.load(path)
                 if isinstance(obj, dict):
-                    _detector = obj
-                    # Check if this is an ensemble model
-                    if _detector.get("feature_type") == "ensemble":
-                        log.info("Ensemble model loaded (soft voting)")
+                    candidate = obj
                 else:
-                    _detector = {
+                    candidate = {
                         "model": obj,
                         "model_name": path.stem,
                         "feature_type": "mfcc_hybrid",
                     }
-                log.info(f"Detector loaded: {_detector.get('model_name', 'unknown')}")
+
+                schema_err = _validate_detector_schema(candidate, str(path))
+                if schema_err:
+                    if DETECTION_STRICT_SCHEMA_CHECK:
+                        log.error(f"Skipping invalid detector artifact: {schema_err}")
+                        continue
+                    log.warning(f"Detector schema warning (strict disabled): {schema_err}")
+
+                _detector = candidate
+                if _normalize_feature_type(_detector.get("feature_type")) == "ensemble":
+                    log.info("Ensemble model loaded (soft voting)")
+                model_id = _detector.get("model_id")
+                if model_id:
+                    log.info("Detector loaded: %s (model_id=%s)", _detector.get("model_name"), model_id)
+                else:
+                    log.info(f"Detector loaded: {_detector.get('model_name', 'unknown')}")
                 return _detector
     except Exception as e:
         log.error(f"Failed to load detector: {e}")
@@ -1067,30 +1203,40 @@ def _extract_shimmer(segment: np.ndarray) -> float:
 def _extract_delta_mfccs(mfcc_features: np.ndarray, n_mfcc: int = 13) -> np.ndarray:
     """
     Calculate first and second derivatives of MFCCs.
-    Returns flattened delta and delta-delta features (2 * n_mfcc dims).
+    Returns flattened delta features:
+      delta_mean + delta_std + delta2_mean + delta2_std (4 * n_mfcc dims).
     """
     if mfcc_features.ndim == 1:
-        return np.zeros(n_mfcc * 2)
+        mfcc_features = mfcc_features.reshape(1, -1)
 
-    delta = np.zeros_like(mfcc_features)
-    for t in range(len(mfcc_features)):
-        if t == 0:
-            delta[t] = mfcc_features[t + 1] - mfcc_features[t]
-        elif t == len(mfcc_features) - 1:
-            delta[t] = mfcc_features[t] - mfcc_features[t - 1]
-        else:
-            delta[t] = (mfcc_features[t + 1] - mfcc_features[t - 1]) / 2
+    n_frames = mfcc_features.shape[0]
+    if n_frames < 3:
+        delta = np.zeros((n_frames, n_mfcc))
+        delta2 = np.zeros((n_frames, n_mfcc))
+    else:
+        delta = np.zeros_like(mfcc_features)
+        for t in range(n_frames):
+            if t == 0:
+                delta[t] = mfcc_features[t + 1] - mfcc_features[t]
+            elif t == n_frames - 1:
+                delta[t] = mfcc_features[t] - mfcc_features[t - 1]
+            else:
+                delta[t] = (mfcc_features[t + 1] - mfcc_features[t - 1]) / 2
 
-    delta2 = np.zeros_like(delta)
-    for t in range(len(delta)):
-        if t == 0:
-            delta2[t] = delta[t + 1] - delta[t]
-        elif t == len(delta) - 1:
-            delta2[t] = delta[t] - delta[t - 1]
-        else:
-            delta2[t] = (delta[t + 1] - delta[t - 1]) / 2
+        delta2 = np.zeros_like(delta)
+        for t in range(n_frames):
+            if t == 0:
+                delta2[t] = delta[t + 1] - delta[t]
+            elif t == n_frames - 1:
+                delta2[t] = delta[t] - delta[t - 1]
+            else:
+                delta2[t] = (delta[t + 1] - delta[t - 1]) / 2
 
-    return np.concatenate([np.mean(delta, axis=0), np.mean(delta2, axis=0)])
+    delta_mean = np.mean(delta, axis=0)
+    delta_std = np.std(delta, axis=0)
+    delta2_mean = np.mean(delta2, axis=0)
+    delta2_std = np.std(delta2, axis=0)
+    return np.concatenate([delta_mean, delta_std, delta2_mean, delta2_std])
 
 
 def _mfcc_features_frames(segment, sr, n_mfcc: int = 13):
@@ -1140,18 +1286,61 @@ def _mfcc_features_frames(segment, sr, n_mfcc: int = 13):
 
 def _extract_enhanced_features(segment: np.ndarray, sr: int) -> np.ndarray:
     """
-    Combine all enhanced features into a single feature vector.
-    Returns: [pitch_mean, pitch_std, jitter, shimmer, delta_mfccs(26)]
-    Total: 30 dimensions
+    Current enhanced schema (75 dims) used by training/train.py:
+      MFCC (13) + FFT (6) + pitch/jitter/shimmer (4) + delta MFCC stats (52)
     """
+    mfcc_mean = _mfcc_features(segment, sr)
+    fft_feats = _fft_features(segment, sr)
     mfcc_frames = _mfcc_features_frames(segment, sr)
-
     pitch_mean, pitch_std = _extract_pitch(segment, sr)
     jitter = _extract_jitter(segment, sr)
     shimmer = _extract_shimmer(segment)
     delta_features = _extract_delta_mfccs(mfcc_frames)
 
-    features = np.concatenate([[pitch_mean, pitch_std, jitter, shimmer], delta_features])
+    features = np.concatenate(
+        [
+            mfcc_mean,
+            fft_feats,
+            np.array([pitch_mean, pitch_std, jitter, shimmer], dtype=np.float32),
+            delta_features,
+        ]
+    )
+    return features
+
+
+def _extract_enhanced_features_legacy30(segment: np.ndarray, sr: int) -> np.ndarray:
+    """
+    Legacy enhanced schema kept for backward compatibility with old 30-dim artifacts:
+      pitch/jitter/shimmer (4) + [delta_mean + delta2_mean] (26)
+    """
+    mfcc_frames = _mfcc_features_frames(segment, sr)
+    if mfcc_frames.ndim == 1:
+        mfcc_frames = mfcc_frames.reshape(1, -1)
+
+    # Legacy delta computation used only for old model artifacts.
+    delta = np.zeros_like(mfcc_frames)
+    for t in range(len(mfcc_frames)):
+        if t == 0 and len(mfcc_frames) > 1:
+            delta[t] = mfcc_frames[t + 1] - mfcc_frames[t]
+        elif t == len(mfcc_frames) - 1 and len(mfcc_frames) > 1:
+            delta[t] = mfcc_frames[t] - mfcc_frames[t - 1]
+        elif 0 < t < len(mfcc_frames) - 1:
+            delta[t] = (mfcc_frames[t + 1] - mfcc_frames[t - 1]) / 2
+
+    delta2 = np.zeros_like(delta)
+    for t in range(len(delta)):
+        if t == 0 and len(delta) > 1:
+            delta2[t] = delta[t + 1] - delta[t]
+        elif t == len(delta) - 1 and len(delta) > 1:
+            delta2[t] = delta[t] - delta[t - 1]
+        elif 0 < t < len(delta) - 1:
+            delta2[t] = (delta[t + 1] - delta[t - 1]) / 2
+
+    delta_legacy = np.concatenate([np.mean(delta, axis=0), np.mean(delta2, axis=0)])
+    pitch_mean, pitch_std = _extract_pitch(segment, sr)
+    jitter = _extract_jitter(segment, sr)
+    shimmer = _extract_shimmer(segment)
+    features = np.concatenate([[pitch_mean, pitch_std, jitter, shimmer], delta_legacy])
 
     return features
 
@@ -1300,6 +1489,22 @@ def _extract_fake_probability(model, proba) -> float | None:
     return float(arr[-1])
 
 
+def _make_model_input(features: np.ndarray, feature_columns: list[str] | None):
+    """Return DataFrame when pandas is available, otherwise fallback to ndarray."""
+    global _pandas_warning_emitted
+    arr = np.asarray(features, dtype=np.float64).reshape(1, -1)
+    if feature_columns:
+        try:
+            import pandas as pd
+
+            return pd.DataFrame(arr, columns=feature_columns)
+        except Exception:
+            if not _pandas_warning_emitted:
+                log.warning("pandas not available for named features; falling back to numpy arrays")
+                _pandas_warning_emitted = True
+    return arr
+
+
 # ─── endpoints ────────────────────────────────────────────────────────────────
 
 
@@ -1311,6 +1516,7 @@ def health(request: Request):
     _load_xtts()
     _check_gtts()
     model_info = {"name": "none", "type": "none", "ensemble": False}
+    manifest_info = None
     if detector:
         model_info["name"] = detector.get("model_name", "unknown")
         model_info["type"] = detector.get("feature_type", "unknown")
@@ -1319,6 +1525,15 @@ def health(request: Request):
             models = detector.get("models", [])
             model_info["ensemble_models"] = [m.get("model_name", "unknown") for m in models]
             model_info["voting"] = detector.get("voting", "soft")
+        manifest_keys = (
+            "model_id",
+            "training_date_utc",
+            "training_data_hash",
+            "classifier_type",
+            "feature_type",
+            "recommended_threshold_profiles",
+        )
+        manifest_info = {k: detector.get(k) for k in manifest_keys if detector.get(k) is not None}
 
     # Determine which TTS engine is available (priority order)
     tts_engine = "none"
@@ -1336,6 +1551,10 @@ def health(request: Request):
         "model_name": model_info["name"],
         "model_type": model_info["type"],
         "ensemble_info": model_info if model_info["ensemble"] else None,
+        "model_manifest": manifest_info,
+        "threshold_profile": DETECTION_THRESHOLD_PROFILE,
+        "detection_fake_threshold": DETECTION_FAKE_THRESHOLD,
+        "uncertain_margin": DETECTION_UNCERTAIN_MARGIN,
         "tts_engine": tts_engine,
         "xtts_v2_available": _xtts_available,
         "indextts2_available": _indextts2_available,
@@ -1383,8 +1602,6 @@ async def detect(
         feature_type = detector.get("feature_type", "mfcc_hybrid")
         feat_cols = detector.get("feature_columns", None)
 
-        import pandas as pd
-
         col_map = {
             "mfcc": [f"MFCC{i + 1}" for i in range(13)],
             "fft": ["centroid", "bandwidth", "rolloff", "low_energy", "mid_energy", "high_energy"],
@@ -1415,6 +1632,7 @@ async def detect(
             "jitter",
             "shimmer",
         ]
+        legacy_enhanced_dim = 30
 
         data_16k, sr_16k = _load_wav_mono_16k(wav_path)
         segments, seg_meta = _select_detection_segments(data_16k, sr_16k)
@@ -1444,23 +1662,29 @@ async def detect(
                     fft = _fft_features(segment, sr_16k)
                     hybrid = np.concatenate([mfcc, fft])
                     legacy = _extract_legacy_18_features_from_segment(segment, sr_16k)
+                    enhanced = _extract_enhanced_features(segment, sr_16k)
+                    enhanced_legacy = _extract_enhanced_features_legacy30(segment, sr_16k)
 
                     candidates = {
                         len(mfcc): mfcc,
                         len(fft): fft,
                         len(hybrid): hybrid,
                         len(legacy): legacy,
+                        len(enhanced): enhanced,
+                        len(enhanced_legacy): enhanced_legacy,
                     }
                     if expected_len in candidates:
                         feats = candidates[expected_len]
                         if expected_len == len(legacy_cols):
+                            legacy_fallback_used = True
+                        if expected_len == legacy_enhanced_dim:
                             legacy_fallback_used = True
                     elif expected_len < len(feats):
                         feats = feats[:expected_len]
                     else:
                         feats = np.pad(feats, (0, expected_len - len(feats)))
 
-                df = pd.DataFrame([feats], columns=cols)
+                df = _make_model_input(feats, cols if isinstance(cols, list) else None)
                 pred_raw = model.predict(df)[0]
 
                 fake_prob = None
@@ -1476,24 +1700,32 @@ async def detect(
             raise HTTPException(500, "Detection failed: no analyzable audio windows.")
 
         fake_probability = float(np.median(fake_probs))
-        prediction = "fake" if fake_probability >= DETECTION_FAKE_THRESHOLD else "real"
+        base_prediction = "fake" if fake_probability >= DETECTION_FAKE_THRESHOLD else "real"
         confidence = float(max(fake_probability, 1.0 - fake_probability))
+        decision_distance = abs(fake_probability - DETECTION_FAKE_THRESHOLD)
+        is_uncertain = decision_distance <= DETECTION_UNCERTAIN_MARGIN
+        prediction = "uncertain" if is_uncertain else base_prediction
 
-        notes = "Deepfake voice detected" if prediction == "fake" else "Real voice detected"
+        notes = "Deepfake voice detected" if base_prediction == "fake" else "Real voice detected"
         if len(fake_probs) > 1:
             voiced = seg_meta.get("voiced_windows", len(fake_probs))
             notes += f" ({len(fake_probs)} windows analyzed, {voiced} voiced)"
         if legacy_fallback_used:
             notes += "; legacy feature mode"
-        if abs(fake_probability - DETECTION_FAKE_THRESHOLD) <= DETECTION_UNCERTAIN_MARGIN:
+        if is_uncertain:
             notes += "; borderline score (out-of-domain audio can be unreliable)"
 
         return JSONResponse(
             {
                 "prediction": prediction,
+                "base_prediction": base_prediction,
+                "is_uncertain": is_uncertain,
                 "confidence": round(confidence, 4),
                 "fake_probability": round(fake_probability, 4),
                 "threshold": round(DETECTION_FAKE_THRESHOLD, 4),
+                "threshold_profile": DETECTION_THRESHOLD_PROFILE,
+                "decision_distance": round(decision_distance, 4),
+                "uncertain_margin": round(DETECTION_UNCERTAIN_MARGIN, 4),
                 "model_used": detector.get("model_name", "unknown"),
                 "feature_type": feature_type,
                 "windows_analyzed": len(fake_probs),
