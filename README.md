@@ -223,8 +223,29 @@ Backend runs at `http://localhost:8000`. Visit `http://localhost:8000/docs` for 
 ```bash
 # Serve frontend locally (any static server)
 cd frontend
-python3 -m http.server 3000
-# Then open http://localhost:3000
+python3 -m http.server 3100
+# Then open http://localhost:3100
+```
+
+### 5. Refresh Local Run (Backend + Frontend)
+
+If ports stop responding, restart both services:
+
+```bash
+# Terminal 1 (backend)
+cd /home/mohammad/Voice-Deepfake-Vishing-Detector-Generator
+.venv/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 2 (frontend)
+cd /home/mohammad/Voice-Deepfake-Vishing-Detector-Generator
+.venv/bin/python -m http.server 3100 --bind 0.0.0.0 --directory frontend
+```
+
+Quick health checks:
+
+```bash
+curl -sS http://127.0.0.1:8000/health
+curl -sS -I http://127.0.0.1:3100
 ```
 
 ---
