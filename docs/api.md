@@ -63,6 +63,10 @@ GET /health
   "threshold_profile": "balanced",
   "detection_fake_threshold": 0.8,
   "uncertain_margin": 0.08,
+  "max_upload_mb": 100.0,
+  "max_upload_bytes": 104857600,
+  "min_audio_duration_seconds": 0.5,
+  "max_audio_duration_seconds": 180.0,
   "tts_engine": "xtts_v2",
   "xtts_v2_available": true,
   "indextts2_available": false,
@@ -83,6 +87,10 @@ GET /health
 | `threshold_profile` | string | Active threshold profile (`balanced`, `low_fp`, `high_recall`) |
 | `detection_fake_threshold` | float | Active fake-class decision threshold |
 | `uncertain_margin` | float | Margin around threshold where result becomes uncertain |
+| `max_upload_mb` | float | Active upload limit in MB (from `MAX_UPLOAD_MB`) |
+| `max_upload_bytes` | integer | Active upload limit in bytes |
+| `min_audio_duration_seconds` | float | Minimum accepted audio duration |
+| `max_audio_duration_seconds` | float | Maximum accepted audio duration |
 | `tts_engine` | string | Available TTS engine (`xtts_v2`, `indextts2`, `gtts_fallback`, `none`) |
 | `xtts_v2_available` | boolean | Whether XTTS v2 is available |
 | `indextts2_available` | boolean | Whether IndexTTS2 is available |
@@ -382,9 +390,14 @@ Current defaults (env-overridable in `backend/app.py`):
 
 | Endpoint | Max File Size | Notes |
 |----------|---------------|-------|
-| `/detect` | 10 MB | Audio file |
-| `/generate` | 10 MB | Speaker reference audio |
-| `/convert-voice` | 10 MB per file | Both source and target |
+| `/detect` | `MAX_UPLOAD_MB` (default 100 MB) | Audio file |
+| `/generate` | `MAX_UPLOAD_MB` (default 100 MB) | Speaker reference audio |
+| `/convert-voice` | `MAX_UPLOAD_MB` per file (default 100 MB) | Both source and target |
+
+The backend also enforces duration limits (env-overridable):
+
+- `MIN_AUDIO_DURATION_SECONDS` (default `0.5`)
+- `MAX_AUDIO_DURATION_SECONDS` (default `180`)
 
 ---
 
@@ -502,6 +515,9 @@ interface HealthResponse {
   status: string;
   model_name: string;
   tts_engine: string;
+  max_upload_mb: number;
+  min_audio_duration_seconds: number;
+  max_audio_duration_seconds: number;
 }
 
 async function checkHealth(): Promise<HealthResponse> {

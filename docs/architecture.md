@@ -336,7 +336,7 @@ flowchart TB
 
 1. **No audio storage** — All files processed in memory, deleted after response
 2. **UUID filenames** — Prevents path traversal attacks
-3. **File size limits** — 10MB max upload per file
+3. **File size limits** — Configurable via `MAX_UPLOAD_MB` (default 100MB per file)
 4. **Consent checkbox** — Required before voice cloning
 5. **CORS** — Configurable allowed origins (currently allows all for development)
 6. **No authentication** — Add API keys for production use

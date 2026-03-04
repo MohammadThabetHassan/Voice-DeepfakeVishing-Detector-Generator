@@ -163,7 +163,7 @@ Training Pipeline:
 | Aspect | Status | Notes |
 |--------|--------|-------|
 | Path traversal protection | ✅ Good | Uses `uuid4().hex` for filenames, not user input |
-| File size limits | ⚠️ Partial | Should add explicit 10MB limit in backend |
+| File size limits | ✅ Good | Backend enforces configurable `MAX_UPLOAD_MB` (default 100MB) |
 | CORS policy | ✅ Acceptable | `allow_origins=["*"]` appropriate for research tool |
 | Temp file cleanup | ✅ Good | `_cleanup()` called in finally blocks |
 | No persistent storage | ✅ Good | Files processed in memory only |

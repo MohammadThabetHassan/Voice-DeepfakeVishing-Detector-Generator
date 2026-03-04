@@ -67,6 +67,13 @@ def test_health_returns_ok():
     assert "uncertain_margin" in data
     assert "quality_gate_enabled" in data
     assert "min_quality_score" in data
+    assert "max_upload_mb" in data
+    assert "max_upload_bytes" in data
+    assert "min_audio_duration_seconds" in data
+    assert "max_audio_duration_seconds" in data
+    assert data["max_upload_mb"] > 0
+    assert data["max_upload_bytes"] > 0
+    assert data["max_audio_duration_seconds"] > data["min_audio_duration_seconds"] > 0
 
 
 def test_model_results_endpoint():
@@ -129,6 +136,18 @@ def test_detect_wrong_content_type():
     resp = client.post("/detect", files=files)
     # Should be 4xx or 5xx, but never a 200 with wrong data
     assert resp.status_code in (400, 415, 422, 500, 503)
+
+
+def test_detect_file_too_large_returns_413(monkeypatch):
+    """Enforce size guard even before decode/conversion."""
+    import backend.app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_FILE_SIZE", 1024)
+    files = {"audio": ("too_big.wav", io.BytesIO(b"\x00" * 2048), "audio/wav")}
+    resp = client.post("/detect", files=files)
+    assert resp.status_code == 413
+    detail = resp.json().get("detail", "")
+    assert "Maximum size is" in detail
 
 
 # ─── Generate ─────────────────────────────────────────────────────────────────

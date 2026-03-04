@@ -394,6 +394,22 @@ Detection quality controls (env vars):
 - `DETECTION_MIN_QUALITY_SCORE=0.35`
 - `DETECTION_REJECT_LOW_QUALITY=false` (set `true` to return 400 for very poor audio)
 
+### Upload Limits (Configurable)
+
+Backend upload and duration limits are env-overridable:
+
+- `MAX_UPLOAD_MB=100` (default)
+- `MIN_AUDIO_DURATION_SECONDS=0.5` (default)
+- `MAX_AUDIO_DURATION_SECONDS=180` (default)
+
+Example:
+
+```bash
+MAX_UPLOAD_MB=250 \
+MAX_AUDIO_DURATION_SECONDS=300 \
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
+```
+
 ---
 
 ## GitHub Actions Workflows

@@ -22,9 +22,14 @@ const LS_KEY_HISTORY = 'deepfake_history';
 const MAX_HISTORY_ITEMS = 10;
 const RESULTS_PATH = '../models/results.json';   // relative from frontend/
 const HEALTH_TIMEOUT_MS = 5000;
+const DEFAULT_MAX_UPLOAD_MB = 100;
+const DEFAULT_MAX_AUDIO_DURATION_SECONDS = 180;
 
 // ─── STATE ───────────────────────────────────────────────────────────────────
 let apiBaseUrl = (localStorage.getItem(LS_KEY_API) || '').replace(/\/$/, '');
+let maxUploadMb = DEFAULT_MAX_UPLOAD_MB;
+let maxUploadBytes = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;
+let maxAudioDurationSeconds = DEFAULT_MAX_AUDIO_DURATION_SECONDS;
 
 // Recording state
 let mediaRecorder = null;
@@ -260,6 +265,38 @@ function clearResult(containerId) {
   el.removeAttribute('tabindex');
 }
 
+function _readPositiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function updateUploadLimitsFromHealth(health) {
+  if (!health || typeof health !== 'object') {
+    maxUploadMb = DEFAULT_MAX_UPLOAD_MB;
+    maxAudioDurationSeconds = DEFAULT_MAX_AUDIO_DURATION_SECONDS;
+  } else {
+    maxUploadMb = _readPositiveNumber(health.max_upload_mb, DEFAULT_MAX_UPLOAD_MB);
+    maxAudioDurationSeconds = _readPositiveNumber(
+      health.max_audio_duration_seconds,
+      DEFAULT_MAX_AUDIO_DURATION_SECONDS
+    );
+  }
+  maxUploadBytes = Math.floor(maxUploadMb * 1024 * 1024);
+}
+
+function validateUploadFileSize(file, contextLabel = 'Audio file') {
+  if (!file) return true;
+  if (file.size <= maxUploadBytes) return true;
+  const fileSizeMb = file.size / (1024 * 1024);
+  const message = (
+    `${contextLabel} is ${fileSizeMb.toFixed(1)} MB. ` +
+    `Backend limit is ${maxUploadMb.toFixed(1)} MB (max ${Math.round(maxAudioDurationSeconds)}s audio).`
+  );
+  alert(message);
+  announceToScreenReader(message, 'assertive');
+  return false;
+}
+
 // ─── TAB NAVIGATION ──────────────────────────────────────────────────────────
 function activateTab(name) {
   const tabs = $$('.tab');
@@ -351,6 +388,7 @@ async function checkApiHealth() {
   const text = $('#api-status-text');
 
   if (!apiBaseUrl) {
+    updateUploadLimitsFromHealth(null);
     dot.className = 'status-dot status-demo';
     text.textContent = 'Demo Mode — no backend configured. Click ⚙ to add API URL.';
     updateDemoNotices(true);
@@ -369,6 +407,7 @@ async function checkApiHealth() {
 
     if (res.ok) {
       const data = await res.json();
+      updateUploadLimitsFromHealth(data);
       dot.className = 'status-dot status-ok';
       const engineLabel = data.tts_engine === 'indextts2' ? 'IndexTTS2'
         : data.tts_engine === 'gtts_fallback' ? 'gTTS (fallback)'
@@ -383,6 +422,7 @@ async function checkApiHealth() {
       throw new Error(`HTTP ${res.status}`);
     }
   } catch (err) {
+    updateUploadLimitsFromHealth(null);
     dot.className = 'status-dot status-error';
     text.textContent = `Backend unreachable (${err.message}). Showing Demo Mode.`;
     updateDemoNotices(true);
@@ -481,6 +521,7 @@ $('#api-save-btn').addEventListener('click', async () => {
     const res = await fetch(`${raw}/health`, { signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    updateUploadLimitsFromHealth(data);
     resultEl.textContent = `✓ Connected!\n${JSON.stringify(data, null, 2)}`;
     apiBaseUrl = raw;
     localStorage.setItem(LS_KEY_API, raw);
@@ -493,6 +534,7 @@ $('#api-save-btn').addEventListener('click', async () => {
 $('#api-clear-btn').addEventListener('click', () => {
   localStorage.removeItem(LS_KEY_API);
   apiBaseUrl = '';
+  updateUploadLimitsFromHealth(null);
   $('#api-url-input').value = '';
   $('#api-test-result').textContent = 'Cleared. Running in Demo Mode.';
   $('#api-test-result').classList.remove('hidden');
@@ -556,9 +598,29 @@ function setupUploadArea(dropZoneId, fileInputId, filenameId, previewId) {
   const input = $(`#${fileInputId}`);
   const label = $(`#${filenameId}`);
   const preview = previewId ? $(`#${previewId}`) : null;
+  const defaultLabelText = label.textContent;
+
+  function resetFileUi() {
+    label.textContent = defaultLabelText;
+    label.closest('.upload-label').classList.remove('has-file');
+    if (preview) {
+      const audio = preview.querySelector('audio');
+      if (audio) {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+      }
+      preview.classList.add('hidden');
+      preview.setAttribute('aria-hidden', 'true');
+    }
+  }
 
   function handleFile(file) {
-    if (!file) return;
+    if (!file) return false;
+    if (!validateUploadFileSize(file, 'Selected file')) {
+      resetFileUi();
+      return false;
+    }
     label.textContent = file.name;
     label.closest('.upload-label').classList.add('has-file');
     if (preview) {
@@ -570,10 +632,13 @@ function setupUploadArea(dropZoneId, fileInputId, filenameId, previewId) {
       loadAndDrawWaveform(file);
     }
     announceToScreenReader(`File selected: ${file.name}`);
+    return true;
   }
 
   input.addEventListener('change', () => {
-    handleFile(input.files[0]);
+    if (!handleFile(input.files[0])) {
+      input.value = '';
+    }
   });
 
   zone.addEventListener('dragover', e => {
@@ -590,7 +655,9 @@ function setupUploadArea(dropZoneId, fileInputId, filenameId, previewId) {
       const dt = new DataTransfer();
       dt.items.add(file);
       input.files = dt.files;
-      handleFile(file);
+      if (!handleFile(file)) {
+        input.value = '';
+      }
     }
   });
 
@@ -718,6 +785,10 @@ async function processRecordedAudio(audioBlob) {
 
     // Create a File object from the Blob
     const wavFile = new File([wavBlob], `recording_${Date.now()}.wav`, { type: 'audio/wav' });
+    if (!validateUploadFileSize(wavFile, 'Recorded audio')) {
+      hideLoading();
+      return;
+    }
 
     // Populate the file input
     const fileInput = $('#detect-file');
@@ -849,6 +920,9 @@ $('#detect-form').addEventListener('submit', async e => {
     $('#detect-file').focus();
     return;
   }
+  if (!validateUploadFileSize(file, 'Detection file')) {
+    return;
+  }
 
   const fd = new FormData();
   fd.append('audio', file, file.name);
@@ -965,6 +1039,9 @@ $('#generate-form').addEventListener('submit', async e => {
     announceToScreenReader('Please select a speaker WAV file.', 'assertive');
     alert('Please select a speaker WAV file.');
     $('#generate-file').focus();
+    return;
+  }
+  if (!validateUploadFileSize(file, 'Speaker reference file')) {
     return;
   }
   if (!text) {

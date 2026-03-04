@@ -49,7 +49,7 @@ The system processes audio samples to classify them as real or synthesised (deep
 
 ### Denial of Service
 - **Threat**: Large audio uploads / Coqui TTS model load consuming all CPU.
-- **Mitigation**: Limit upload size (10 MB max in backend); rate-limit API with a reverse proxy (nginx); use Uvicorn worker limits.
+- **Mitigation**: Limit upload size (`MAX_UPLOAD_MB`, default 100 MB); rate-limit API with a reverse proxy (nginx); use Uvicorn worker limits.
 
 ### Elevation of Privilege
 - **Threat**: Path traversal in filename (e.g. `../../etc/passwd`).
@@ -61,7 +61,7 @@ The system processes audio samples to classify them as real or synthesised (deep
 
 ```
 [Browser]
-   │ HTTPS POST /detect (WAV ≤10 MB)
+   │ HTTPS POST /detect (WAV ≤ MAX_UPLOAD_MB, default 100 MB)
    ▼
 [FastAPI Backend]
    │ pydub → normalize to mono 16 kHz WAV (temp file)

@@ -70,10 +70,10 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(mes
 log = logging.getLogger("deepfake-api")
 
 # ─── security configuration ───────────────────────────────────────────────────
-# File upload limits
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-MAX_AUDIO_DURATION_SECONDS = 60  # 60 seconds
-MIN_AUDIO_DURATION_SECONDS = 0.5  # 500 ms
+# File upload/audio limits (env-overridable)
+DEFAULT_MAX_UPLOAD_MB = 100
+DEFAULT_MAX_AUDIO_DURATION_SECONDS = 180.0
+DEFAULT_MIN_AUDIO_DURATION_SECONDS = 0.5
 
 # CORS configuration - allow specific origins in production
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*").split(",")
@@ -120,6 +120,40 @@ def _env_bool(name: str, default: bool) -> bool:
         return False
     log.warning(f"Invalid {name}={value!r}; using default {default}")
     return default
+
+
+MAX_UPLOAD_MB = max(1, _env_int("MAX_UPLOAD_MB", DEFAULT_MAX_UPLOAD_MB))
+MAX_FILE_SIZE = MAX_UPLOAD_MB * 1024 * 1024
+MAX_AUDIO_DURATION_SECONDS = _env_float(
+    "MAX_AUDIO_DURATION_SECONDS",
+    DEFAULT_MAX_AUDIO_DURATION_SECONDS,
+)
+MIN_AUDIO_DURATION_SECONDS = _env_float(
+    "MIN_AUDIO_DURATION_SECONDS",
+    DEFAULT_MIN_AUDIO_DURATION_SECONDS,
+)
+
+if MAX_AUDIO_DURATION_SECONDS <= 0:
+    log.warning(
+        "MAX_AUDIO_DURATION_SECONDS must be > 0; using default %.1fs",
+        DEFAULT_MAX_AUDIO_DURATION_SECONDS,
+    )
+    MAX_AUDIO_DURATION_SECONDS = DEFAULT_MAX_AUDIO_DURATION_SECONDS
+if MIN_AUDIO_DURATION_SECONDS <= 0:
+    log.warning(
+        "MIN_AUDIO_DURATION_SECONDS must be > 0; using default %.1fs",
+        DEFAULT_MIN_AUDIO_DURATION_SECONDS,
+    )
+    MIN_AUDIO_DURATION_SECONDS = DEFAULT_MIN_AUDIO_DURATION_SECONDS
+if MIN_AUDIO_DURATION_SECONDS >= MAX_AUDIO_DURATION_SECONDS:
+    fallback_min_duration = min(DEFAULT_MIN_AUDIO_DURATION_SECONDS, MAX_AUDIO_DURATION_SECONDS / 2.0)
+    log.warning(
+        "MIN_AUDIO_DURATION_SECONDS (%.3fs) must be less than MAX_AUDIO_DURATION_SECONDS (%.3fs); using %.3fs",
+        MIN_AUDIO_DURATION_SECONDS,
+        MAX_AUDIO_DURATION_SECONDS,
+        fallback_min_duration,
+    )
+    MIN_AUDIO_DURATION_SECONDS = fallback_min_duration
 
 
 DETECTION_THRESHOLD_PROFILES = {
@@ -479,6 +513,20 @@ def _convert_to_wav(src: Path, dst: Path) -> bool:
     return False
 
 
+def _file_too_large_detail(actual_size_bytes: int | None = None) -> str:
+    limit_mb = MAX_FILE_SIZE / (1024 * 1024)
+    if actual_size_bytes is not None:
+        actual_mb = actual_size_bytes / (1024 * 1024)
+        return (
+            f"File too large ({actual_mb:.1f} MB). Maximum size is {limit_mb:.1f} MB. "
+            "Increase MAX_UPLOAD_MB to allow larger uploads."
+        )
+    return (
+        f"File too large. Maximum size is {limit_mb:.1f} MB. "
+        "Increase MAX_UPLOAD_MB to allow larger uploads."
+    )
+
+
 def _validate_file_size(upload: UploadFile) -> None:
     """Validate file size is within limits."""
     # Check content-length header if available
@@ -486,7 +534,7 @@ def _validate_file_size(upload: UploadFile) -> None:
     if content_length and content_length > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=413,
-            detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024 * 1024):.1f} MB.",
+            detail=_file_too_large_detail(content_length),
         )
 
 
@@ -535,7 +583,7 @@ def _save_upload(
     if len(data) > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=413,
-            detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024 * 1024):.1f} MB.",
+            detail=_file_too_large_detail(len(data)),
         )
 
     raw_path.write_bytes(data)
@@ -1666,6 +1714,10 @@ def health(request: Request):
         "quality_gate_enabled": DETECTION_ENABLE_QUALITY_GATE,
         "reject_low_quality": DETECTION_REJECT_LOW_QUALITY,
         "min_quality_score": DETECTION_MIN_QUALITY_SCORE,
+        "max_upload_mb": round(MAX_FILE_SIZE / (1024 * 1024), 1),
+        "max_upload_bytes": MAX_FILE_SIZE,
+        "min_audio_duration_seconds": MIN_AUDIO_DURATION_SECONDS,
+        "max_audio_duration_seconds": MAX_AUDIO_DURATION_SECONDS,
         "tts_engine": tts_engine,
         "xtts_v2_available": _xtts_available,
         "indextts2_available": _indextts2_available,

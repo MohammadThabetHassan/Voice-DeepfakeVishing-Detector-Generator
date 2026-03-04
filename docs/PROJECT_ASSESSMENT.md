@@ -198,8 +198,8 @@ security:
   rate_limits:
     detect: "30/minute"
     generate: "10/minute"
-  max_file_size: 10485760  # 10MB
-  max_audio_duration: 60
+  max_file_size: 104857600  # 100MB (default via MAX_UPLOAD_MB)
+  max_audio_duration: 180
 
 models:
   default: "hybrid_xgboost"
